@@ -8,6 +8,7 @@ import os
 import sys
 import time
 from datetime import datetime
+from pathlib import Path
 
 import requests
 from dotenv import load_dotenv
@@ -21,7 +22,8 @@ RSK_RPC_URL    = os.getenv("RSK_RPC_URL")
 BRIDGE_ADDRESS = os.getenv("BRIDGE_ADDRESS", "0x0000000000000000000000000000000001000006")
 NETWORK        = os.getenv("NETWORK", "testnet")
 POLL_INTERVAL  = 60
-STATE_FILE     = "monitor-state.json"
+_HERE      = Path(__file__).parent
+STATE_FILE = str(_HERE / "monitor-state.json")
 
 PEGIN_REQUIRED  = 100 if NETWORK == "mainnet" else 10
 PEGOUT_REQUIRED = 4000 if NETWORK == "mainnet" else 10
@@ -40,7 +42,7 @@ if not RSK_RPC_URL:
 
 w3 = Web3(Web3.HTTPProvider(RSK_RPC_URL))
 
-with open("bridge-abi.json") as f:
+with open(_HERE / "bridge-abi.json") as f:
     BRIDGE_ABI = json.load(f)
 
 bridge = w3.eth.contract(
@@ -126,22 +128,58 @@ def with_retry(fn, max_retries: int = 3):
                 raise
             time.sleep(2 ** (i + 1))
 
+# ── Peg-In helpers ─────────────────────────────────────────────────────────────
+
+def validate_pegin_target(btc_tx_hash: str, expected_fed_address: str) -> None:
+    res = with_retry(lambda: requests.get(f"{BTC_API}/tx/{btc_tx_hash}", timeout=10))
+    if res.status_code != 200:
+        raise ValueError(
+            f"Blockstream API returned {res.status_code} for tx {btc_tx_hash}. "
+            f"Check the hash is correct and on {NETWORK}."
+        )
+    tx = res.json()
+    if not tx.get("vout"):
+        raise ValueError(f"Could not fetch outputs for tx {btc_tx_hash}.")
+    targeted = any(
+        v.get("scriptpubkey_address") == expected_fed_address for v in tx["vout"]
+    )
+    if not targeted:
+        raise ValueError(
+            f"Tx {btc_tx_hash} does not send to federation address {expected_fed_address}.\n"
+            f"The PowPeg composition may have changed. Check powpeg.rootstock.io for the current address."
+        )
+
 # ── Peg-In Monitor ─────────────────────────────────────────────────────────────
 
 def monitor_pegin(btc_tx_hash: str, rsk_address: str) -> None:
-    state           = load_state()
+    # Strip accidental 0x prefix — BTC tx hashes are plain hex
+    if btc_tx_hash.startswith(("0x", "0X")):
+        btc_tx_hash = btc_tx_hash[2:]
+        print("  Warning: stripped 0x prefix from BTC tx hash.")
+
+    state            = load_state()
     alerted_complete = state.get(f"{btc_tx_hash}_complete", False)
 
     print(f"\n  Starting peg-in monitor for {btc_tx_hash[:20]}...")
-    print(f"  Network: {NETWORK} | Required confirmations: {PEGIN_REQUIRED}\n")
+    print(f"  Network: {NETWORK} | Required confirmations: {PEGIN_REQUIRED}")
+
+    # Validate tx targets current federation address before polling
+    print("  Validating tx targets current federation address...")
+    fed_address = with_retry(lambda: bridge.functions.getFederationAddress().call())
+    print(f"  Federation address: {fed_address}\n")
+    validate_pegin_target(btc_tx_hash, fed_address)
 
     while True:
         try:
             bridge_btc_height = with_retry(
                 lambda: bridge.functions.getBtcBlockchainBestChainHeight().call()
             )
-            res  = with_retry(lambda: requests.get(f"{BTC_API}/tx/{btc_tx_hash}", timeout=10))
-            tx   = res.json()
+            res = with_retry(lambda: requests.get(f"{BTC_API}/tx/{btc_tx_hash}", timeout=10))
+            if res.status_code != 200:
+                print(f"  Blockstream API error {res.status_code} — will retry next poll.")
+                time.sleep(POLL_INTERVAL)
+                continue
+            tx = res.json()
 
             if not tx.get("status", {}).get("confirmed"):
                 print_status("PEG-IN (BTC → rBTC)", {
@@ -153,8 +191,9 @@ def monitor_pegin(btc_tx_hash: str, rsk_address: str) -> None:
                     "ETA"              : seconds_to_human(PEGIN_REQUIRED * BTC_BLOCK_TIME),
                 })
             else:
-                tx_block    = tx["status"]["block_height"]
-                confirms    = bridge_btc_height - tx_block + 1
+                tx_block  = tx["status"]["block_height"]
+                # Clamp to 0: Bridge SPV view can temporarily lag behind the BTC tx block
+                confirms  = max(0, bridge_btc_height - tx_block + 1)
                 remaining   = max(0, PEGIN_REQUIRED - confirms)
                 complete    = confirms >= PEGIN_REQUIRED
 
@@ -225,6 +264,8 @@ def monitor_pegout(rsk_tx_hash: str) -> None:
                 )
                 blocks_to_next = max(0, next_batch - current_block)
 
+                # 10 RSK confirms = ~5 min — early indicator the tx is safely included;
+                # not a protocol threshold, just a useful status boundary for the display.
                 status = (
                     "✓ COMPLETE — BTC broadcast"
                     if complete

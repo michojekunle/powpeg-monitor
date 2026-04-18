@@ -1,7 +1,8 @@
 "use strict";
 
 const { ethers } = require("ethers");
-const fs = require("fs");
+const fs   = require("fs");
+const path = require("path");
 require("dotenv").config();
 
 // Node 18+ has fetch built-in; fall back to node-fetch for older runtimes
@@ -13,7 +14,7 @@ const RSK_RPC_URL    = process.env.RSK_RPC_URL;
 const BRIDGE_ADDRESS = process.env.BRIDGE_ADDRESS || "0x0000000000000000000000000000000001000006";
 const NETWORK        = process.env.NETWORK || "testnet";
 const POLL_INTERVAL  = 60_000;
-const STATE_FILE     = "./monitor-state.json";
+const STATE_FILE     = path.join(__dirname, "monitor-state.json");
 
 const PEGIN_REQUIRED  = NETWORK === "mainnet" ? 100 : 10;
 const PEGOUT_REQUIRED = NETWORK === "mainnet" ? 4000 : 10;
@@ -30,7 +31,7 @@ if (!RSK_RPC_URL) {
   process.exit(1);
 }
 
-const BRIDGE_ABI = JSON.parse(fs.readFileSync("./bridge-abi.json", "utf8"));
+const BRIDGE_ABI = JSON.parse(fs.readFileSync(path.join(__dirname, "bridge-abi.json"), "utf8"));
 const provider   = new ethers.JsonRpcProvider(RSK_RPC_URL);
 const bridge     = new ethers.Contract(BRIDGE_ADDRESS, BRIDGE_ABI, provider);
 
@@ -65,7 +66,7 @@ function printStatus(label, data) {
   console.log("╔════════════════════════════════════════════╗");
   console.log(`║  PowPeg Monitor — ${NETWORK.toUpperCase().padEnd(24)}║`);
   console.log("╚════════════════════════════════════════════╝");
-  console.log(`\n  Type            : ${label}`);
+  console.log(`\n  ${"Type".padEnd(18)}: ${label}`);
   for (const [k, v] of Object.entries(data)) {
     console.log(`  ${k.padEnd(18)}: ${v}`);
   }
@@ -124,12 +125,42 @@ async function withRetry(fn, maxRetries = 3) {
 
 // ── Peg-In Monitor ─────────────────────────────────────────────────────────────
 
+async function validatePeginTarget(btcTxHash, expectedFedAddress) {
+  const res = await withRetry(() => fetch(`${BTC_API}/tx/${btcTxHash}`));
+  if (!res.ok) {
+    throw new Error(`Blockstream API returned ${res.status} for tx ${btcTxHash}. Check the hash is correct and on ${NETWORK}.`);
+  }
+  const tx = await res.json();
+  if (!tx?.vout) {
+    throw new Error(`Could not fetch outputs for tx ${btcTxHash}.`);
+  }
+  const targeted = tx.vout.some((v) => v.scriptpubkey_address === expectedFedAddress);
+  if (!targeted) {
+    throw new Error(
+      `Tx ${btcTxHash} does not send to federation address ${expectedFedAddress}.\n` +
+      `The PowPeg composition may have changed. Check powpeg.rootstock.io for the current address.`
+    );
+  }
+}
+
 async function monitorPegin(btcTxHash, rskAddress) {
+  // Strip accidental 0x prefix — BTC tx hashes are plain hex
+  if (btcTxHash.startsWith("0x") || btcTxHash.startsWith("0X")) {
+    btcTxHash = btcTxHash.slice(2);
+    console.warn(`  Warning: stripped 0x prefix from BTC tx hash.`);
+  }
+
   const state = loadState();
   let alertedComplete = state[`${btcTxHash}_complete`] || false;
 
   console.log(`\n  Starting peg-in monitor for ${btcTxHash.slice(0, 20)}...`);
-  console.log(`  Network: ${NETWORK} | Required confirmations: ${PEGIN_REQUIRED}\n`);
+  console.log(`  Network: ${NETWORK} | Required confirmations: ${PEGIN_REQUIRED}`);
+
+  // Validate tx actually targets the current federation address before polling
+  console.log(`  Validating tx targets current federation address...`);
+  const fedAddress = await withRetry(() => bridge.getFederationAddress());
+  console.log(`  Federation address: ${fedAddress}\n`);
+  await validatePeginTarget(btcTxHash, fedAddress);
 
   async function poll() {
     try {
@@ -137,6 +168,11 @@ async function monitorPegin(btcTxHash, rskAddress) {
         withRetry(() => bridge.getBtcBlockchainBestChainHeight()),
         withRetry(() => fetch(`${BTC_API}/tx/${btcTxHash}`)),
       ]);
+
+      if (!btcRes.ok) {
+        console.error(`  Blockstream API error ${btcRes.status} — will retry next poll.`);
+        return;
+      }
 
       const txData = await btcRes.json();
 
@@ -153,7 +189,8 @@ async function monitorPegin(btcTxHash, rskAddress) {
       }
 
       const txBlockHeight    = txData.status.block_height;
-      const btcConfirmations = Number(bridgeBtcHeight) - txBlockHeight + 1;
+      // Clamp to 0: Bridge SPV view can temporarily lag behind the BTC tx block
+      const btcConfirmations = Math.max(0, Number(bridgeBtcHeight) - txBlockHeight + 1);
       const remaining        = Math.max(0, PEGIN_REQUIRED - btcConfirmations);
       const complete         = btcConfirmations >= PEGIN_REQUIRED;
 
@@ -232,6 +269,8 @@ async function monitorPegout(rskTxHash) {
 
       const blocksToNext = Math.max(0, Number(nextBatchBlock) - currentBlock);
 
+      // 10 RSK confirms = ~5 min — early indicator the tx is safely included;
+      // not a protocol threshold, just a useful status boundary for the display.
       const status = complete
         ? "✓ COMPLETE — BTC broadcast"
         : rskConfirms >= 10

@@ -2,7 +2,7 @@
 
 Moving Bitcoin into Rootstock's ecosystem gives you EVM compatibility, smart contracts, and DeFi — all still backed by Bitcoin's proof-of-work. But the PowPeg bridge is not instant. A native peg-in takes 100 Bitcoin confirmations (~17 hours). A native peg-out waits for 4,000 Rootstock block confirmations (~34 hours). During that window, most developers and users are flying blind.
 
-This tutorial walks you through building a lightweight real-time monitor that tracks peg-in and peg-out transaction status, counts confirmations, estimates time remaining, and optionally fires Telegram or Discord alerts when funds land. The entire system runs from a single script — no backend server required.
+This tutorial builds a lightweight real-time monitor that tracks peg-in and peg-out transaction status, counts confirmations, estimates time remaining, and optionally fires Telegram or Discord alerts when funds land. The entire system runs from a single script — no backend server required.
 
 The complete code is on GitHub: [github.com/michojekunle/powpeg-monitor](https://github.com/michojekunle/powpeg-monitor)
 
@@ -91,7 +91,12 @@ pip install web3 python-dotenv requests
 
 ## The Bridge Contract ABI
 
-You only need five read-only functions. Save this as `bridge-abi.json`:
+Four read-only functions cover everything the monitor needs. Save this as `bridge-abi.json`:
+
+- `getBtcBlockchainBestChainHeight` — Bridge's live SPV view of the BTC chain (peg-in)
+- `getFederationAddress` — current federation address; validated at peg-in startup
+- `getQueuedPegoutsCount` — pending peg-outs in the queue (peg-out display)
+- `getNextPegoutCreationBlockNumber` — next batch processing block (peg-out display)
 
 ```json
 [
@@ -122,13 +127,6 @@ You only need five read-only functions. Save this as `bridge-abi.json`:
     "stateMutability": "view",
     "inputs": [],
     "outputs": [{ "name": "", "type": "uint256" }]
-  },
-  {
-    "name": "getEstimatedFeesForNextPegOutEvent",
-    "type": "function",
-    "stateMutability": "view",
-    "inputs": [],
-    "outputs": [{ "name": "", "type": "uint256" }]
   }
 ]
 ```
@@ -143,7 +141,8 @@ Create `monitor.js`:
 "use strict";
 
 const { ethers } = require("ethers");
-const fs = require("fs");
+const fs   = require("fs");
+const path = require("path");
 require("dotenv").config();
 
 // Node 18+ has fetch built-in; fall back to node-fetch for older runtimes
@@ -155,7 +154,7 @@ const RSK_RPC_URL    = process.env.RSK_RPC_URL;
 const BRIDGE_ADDRESS = process.env.BRIDGE_ADDRESS || "0x0000000000000000000000000000000001000006";
 const NETWORK        = process.env.NETWORK || "testnet";
 const POLL_INTERVAL  = 60_000;
-const STATE_FILE     = "./monitor-state.json";
+const STATE_FILE     = path.join(__dirname, "monitor-state.json");
 
 const PEGIN_REQUIRED  = NETWORK === "mainnet" ? 100 : 10;
 const PEGOUT_REQUIRED = NETWORK === "mainnet" ? 4000 : 10;
@@ -172,7 +171,7 @@ if (!RSK_RPC_URL) {
   process.exit(1);
 }
 
-const BRIDGE_ABI = JSON.parse(fs.readFileSync("./bridge-abi.json", "utf8"));
+const BRIDGE_ABI = JSON.parse(fs.readFileSync(path.join(__dirname, "bridge-abi.json"), "utf8"));
 const provider   = new ethers.JsonRpcProvider(RSK_RPC_URL);
 const bridge     = new ethers.Contract(BRIDGE_ADDRESS, BRIDGE_ABI, provider);
 
@@ -207,7 +206,7 @@ function printStatus(label, data) {
   console.log("╔════════════════════════════════════════════╗");
   console.log(`║  PowPeg Monitor — ${NETWORK.toUpperCase().padEnd(24)}║`);
   console.log("╚════════════════════════════════════════════╝");
-  console.log(`\n  Type            : ${label}`);
+  console.log(`\n  ${"Type".padEnd(18)}: ${label}`);
   for (const [k, v] of Object.entries(data)) {
     console.log(`  ${k.padEnd(18)}: ${v}`);
   }
@@ -266,12 +265,42 @@ async function withRetry(fn, maxRetries = 3) {
 
 // ── Peg-In Monitor ─────────────────────────────────────────────────────────────
 
+async function validatePeginTarget(btcTxHash, expectedFedAddress) {
+  const res = await withRetry(() => fetch(`${BTC_API}/tx/${btcTxHash}`));
+  if (!res.ok) {
+    throw new Error(`Blockstream API returned ${res.status} for tx ${btcTxHash}. Check the hash is correct and on ${NETWORK}.`);
+  }
+  const tx = await res.json();
+  if (!tx?.vout) {
+    throw new Error(`Could not fetch outputs for tx ${btcTxHash}.`);
+  }
+  const targeted = tx.vout.some((v) => v.scriptpubkey_address === expectedFedAddress);
+  if (!targeted) {
+    throw new Error(
+      `Tx ${btcTxHash} does not send to federation address ${expectedFedAddress}.\n` +
+      `The PowPeg composition may have changed. Check powpeg.rootstock.io for the current address.`
+    );
+  }
+}
+
 async function monitorPegin(btcTxHash, rskAddress) {
+  // Strip accidental 0x prefix — BTC tx hashes are plain hex
+  if (btcTxHash.startsWith("0x") || btcTxHash.startsWith("0X")) {
+    btcTxHash = btcTxHash.slice(2);
+    console.warn(`  Warning: stripped 0x prefix from BTC tx hash.`);
+  }
+
   const state = loadState();
   let alertedComplete = state[`${btcTxHash}_complete`] || false;
 
   console.log(`\n  Starting peg-in monitor for ${btcTxHash.slice(0, 20)}...`);
-  console.log(`  Network: ${NETWORK} | Required confirmations: ${PEGIN_REQUIRED}\n`);
+  console.log(`  Network: ${NETWORK} | Required confirmations: ${PEGIN_REQUIRED}`);
+
+  // Validate tx actually targets the current federation address before polling
+  console.log(`  Validating tx targets current federation address...`);
+  const fedAddress = await withRetry(() => bridge.getFederationAddress());
+  console.log(`  Federation address: ${fedAddress}\n`);
+  await validatePeginTarget(btcTxHash, fedAddress);
 
   async function poll() {
     try {
@@ -279,6 +308,11 @@ async function monitorPegin(btcTxHash, rskAddress) {
         withRetry(() => bridge.getBtcBlockchainBestChainHeight()),
         withRetry(() => fetch(`${BTC_API}/tx/${btcTxHash}`)),
       ]);
+
+      if (!btcRes.ok) {
+        console.error(`  Blockstream API error ${btcRes.status} — will retry next poll.`);
+        return;
+      }
 
       const txData = await btcRes.json();
 
@@ -295,7 +329,8 @@ async function monitorPegin(btcTxHash, rskAddress) {
       }
 
       const txBlockHeight    = txData.status.block_height;
-      const btcConfirmations = Number(bridgeBtcHeight) - txBlockHeight + 1;
+      // Clamp to 0: Bridge SPV view can temporarily lag behind the BTC tx block
+      const btcConfirmations = Math.max(0, Number(bridgeBtcHeight) - txBlockHeight + 1);
       const remaining        = Math.max(0, PEGIN_REQUIRED - btcConfirmations);
       const complete         = btcConfirmations >= PEGIN_REQUIRED;
 
@@ -374,6 +409,8 @@ async function monitorPegout(rskTxHash) {
 
       const blocksToNext = Math.max(0, Number(nextBatchBlock) - currentBlock);
 
+      // 10 RSK confirms = ~5 min — early indicator the tx is safely included;
+      // not a protocol threshold, just a useful status boundary for the display.
       const status = complete
         ? "✓ COMPLETE — BTC broadcast"
         : rskConfirms >= 10
@@ -472,6 +509,7 @@ import os
 import sys
 import time
 from datetime import datetime
+from pathlib import Path
 
 import requests
 from dotenv import load_dotenv
@@ -485,7 +523,8 @@ RSK_RPC_URL    = os.getenv("RSK_RPC_URL")
 BRIDGE_ADDRESS = os.getenv("BRIDGE_ADDRESS", "0x0000000000000000000000000000000001000006")
 NETWORK        = os.getenv("NETWORK", "testnet")
 POLL_INTERVAL  = 60
-STATE_FILE     = "monitor-state.json"
+_HERE      = Path(__file__).parent
+STATE_FILE = str(_HERE / "monitor-state.json")
 
 PEGIN_REQUIRED  = 100 if NETWORK == "mainnet" else 10
 PEGOUT_REQUIRED = 4000 if NETWORK == "mainnet" else 10
@@ -504,7 +543,7 @@ if not RSK_RPC_URL:
 
 w3 = Web3(Web3.HTTPProvider(RSK_RPC_URL))
 
-with open("bridge-abi.json") as f:
+with open(_HERE / "bridge-abi.json") as f:
     BRIDGE_ABI = json.load(f)
 
 bridge = w3.eth.contract(
@@ -590,23 +629,57 @@ def with_retry(fn, max_retries: int = 3):
                 raise
             time.sleep(2 ** (i + 1))
 
+# ── Peg-In helpers ─────────────────────────────────────────────────────────────
+
+def validate_pegin_target(btc_tx_hash: str, expected_fed_address: str) -> None:
+    res = with_retry(lambda: requests.get(f"{BTC_API}/tx/{btc_tx_hash}", timeout=10))
+    if res.status_code != 200:
+        raise ValueError(
+            f"Blockstream API returned {res.status_code} for tx {btc_tx_hash}. "
+            f"Check the hash is correct and on {NETWORK}."
+        )
+    tx = res.json()
+    if not tx.get("vout"):
+        raise ValueError(f"Could not fetch outputs for tx {btc_tx_hash}.")
+    targeted = any(
+        v.get("scriptpubkey_address") == expected_fed_address for v in tx["vout"]
+    )
+    if not targeted:
+        raise ValueError(
+            f"Tx {btc_tx_hash} does not send to federation address {expected_fed_address}.\n"
+            f"The PowPeg composition may have changed. Check powpeg.rootstock.io for the current address."
+        )
+
 # ── Peg-In Monitor ─────────────────────────────────────────────────────────────
 
 def monitor_pegin(btc_tx_hash: str, rsk_address: str) -> None:
+    # Strip accidental 0x prefix — BTC tx hashes are plain hex
+    if btc_tx_hash.startswith(("0x", "0X")):
+        btc_tx_hash = btc_tx_hash[2:]
+        print("  Warning: stripped 0x prefix from BTC tx hash.")
+
     state            = load_state()
     alerted_complete = state.get(f"{btc_tx_hash}_complete", False)
 
     print(f"\n  Starting peg-in monitor for {btc_tx_hash[:20]}...")
-    print(f"  Network: {NETWORK} | Required confirmations: {PEGIN_REQUIRED}\n")
+    print(f"  Network: {NETWORK} | Required confirmations: {PEGIN_REQUIRED}")
+
+    # Validate tx targets current federation address before polling
+    print("  Validating tx targets current federation address...")
+    fed_address = with_retry(lambda: bridge.functions.getFederationAddress().call())
+    print(f"  Federation address: {fed_address}\n")
+    validate_pegin_target(btc_tx_hash, fed_address)
 
     while True:
         try:
             bridge_btc_height = with_retry(
                 lambda: bridge.functions.getBtcBlockchainBestChainHeight().call()
             )
-            res = with_retry(
-                lambda: requests.get(f"{BTC_API}/tx/{btc_tx_hash}", timeout=10)
-            )
+            res = with_retry(lambda: requests.get(f"{BTC_API}/tx/{btc_tx_hash}", timeout=10))
+            if res.status_code != 200:
+                print(f"  Blockstream API error {res.status_code} — will retry next poll.")
+                time.sleep(POLL_INTERVAL)
+                continue
             tx = res.json()
 
             if not tx.get("status", {}).get("confirmed"):
@@ -620,9 +693,10 @@ def monitor_pegin(btc_tx_hash: str, rsk_address: str) -> None:
                 })
             else:
                 tx_block  = tx["status"]["block_height"]
-                confirms  = bridge_btc_height - tx_block + 1
-                remaining = max(0, PEGIN_REQUIRED - confirms)
-                complete  = confirms >= PEGIN_REQUIRED
+                # Clamp to 0: Bridge SPV view can temporarily lag behind the BTC tx block
+                confirms  = max(0, bridge_btc_height - tx_block + 1)
+                remaining   = max(0, PEGIN_REQUIRED - confirms)
+                complete    = confirms >= PEGIN_REQUIRED
 
                 print_status("PEG-IN (BTC → rBTC)", {
                     "BTC Tx Hash"      : f"{btc_tx_hash[:20]}...",
@@ -678,10 +752,10 @@ def monitor_pegout(rsk_tx_hash: str) -> None:
                     "Confirmations" : f"0 / {PEGOUT_REQUIRED}",
                 })
             else:
-                tx_block   = receipt["blockNumber"]
-                confirms   = current_block - tx_block
-                remaining  = max(0, PEGOUT_REQUIRED - confirms)
-                complete   = confirms >= PEGOUT_REQUIRED
+                tx_block     = receipt["blockNumber"]
+                confirms     = current_block - tx_block
+                remaining    = max(0, PEGOUT_REQUIRED - confirms)
+                complete     = confirms >= PEGOUT_REQUIRED
 
                 queued_count = with_retry(
                     lambda: bridge.functions.getQueuedPegoutsCount().call()
@@ -691,6 +765,8 @@ def monitor_pegout(rsk_tx_hash: str) -> None:
                 )
                 blocks_to_next = max(0, next_batch - current_block)
 
+                # 10 RSK confirms = ~5 min — early indicator the tx is safely included;
+                # not a protocol threshold, just a useful status boundary for the display.
                 status = (
                     "✓ COMPLETE — BTC broadcast"
                     if complete
@@ -824,25 +900,33 @@ Go to [dashboard.rpc.rootstock.io](https://dashboard.rpc.rootstock.io) or [alche
 
 ### Step 2: Confirm the current federation address
 
-The PowPeg federation address rotates when the PowPeg composition changes. Always query it fresh before sending BTC:
+The PowPeg federation address rotates when the PowPeg composition changes. Always query it fresh before sending BTC. Use Node or Python to decode the ABI-encoded response correctly — the raw `eth_call` hex cannot be decoded as plain UTF-8 (the response has a 64-byte ABI header before the string bytes):
 
-```bash
-curl -X POST https://rpc.testnet.rootstock.io/YOUR_API_KEY \
-  -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "method": "eth_call",
-    "params": [{
-      "to": "0x0000000000000000000000000000000001000006",
-      "data": "0x6923fa85"
-    }, "latest"],
-    "id": 1
-  }'
+```javascript
+// Quick one-liner — run from your project directory
+node -e "
+const { ethers } = require('ethers');
+require('dotenv').config();
+const abi = require('./bridge-abi.json');
+const provider = new ethers.JsonRpcProvider(process.env.RSK_RPC_URL);
+const bridge = new ethers.Contract(process.env.BRIDGE_ADDRESS, abi, provider);
+bridge.getFederationAddress().then(addr => console.log('Federation address:', addr));
+"
 ```
 
-The selector `0x6923fa85` is the ABI encoding of `getFederationAddress()`. Decode the hex response as UTF-8 to get the current Bitcoin testnet address.
+```python
+# Python equivalent
+python3 -c "
+from web3 import Web3; import json, os
+from dotenv import load_dotenv; load_dotenv()
+w3 = Web3(Web3.HTTPProvider(os.getenv('RSK_RPC_URL')))
+abi = json.load(open('bridge-abi.json'))
+bridge = w3.eth.contract(address=Web3.to_checksum_address(os.getenv('BRIDGE_ADDRESS')), abi=abi)
+print('Federation address:', bridge.functions.getFederationAddress().call())
+"
+```
 
-At the time of writing (April 2026), the testnet federation address is `2N88sMiizxmbb8Y3yA4AtYmL1RxHogWfoHa`. Verify this yourself before sending anything.
+The monitor automatically fetches and validates this at startup for peg-in transactions. At the time of writing (April 2026), the testnet federation address is `2N88sMiizxmbb8Y3yA4AtYmL1RxHogWfoHa`. Verify it yourself before sending anything.
 
 ### Step 3: Track a peg-in (BTC → rBTC)
 
@@ -861,6 +945,11 @@ node monitor.js pegin a74918ced40b93d8cf9843cc952db41d233fda569ae60cee240292153a
 Output:
 
 ```
+  Starting peg-in monitor for a74918ced40b93d8cf98...
+  Network: testnet | Required confirmations: 10
+  Validating tx targets current federation address...
+  Federation address: 2N88sMiizxmbb8Y3yA4AtYmL1RxHogWfoHa
+
 ╔════════════════════════════════════════════╗
 ║  PowPeg Monitor — TESTNET                 ║
 ╚════════════════════════════════════════════╝
@@ -869,12 +958,12 @@ Output:
   BTC Tx Hash       : a74918ced40b93d8cf98...
   RSK Address       : 0x742d35Cc6634C05532...
   BTC Tx Block      : 4918812
-  Bridge BTC Height : 4922702
-  Confirmations     : 3891 / 10
+  Bridge BTC Height : 4925875
+  Confirmations     : 7064 / 10
   Status            : ✓ COMPLETE — rBTC credited
   ETA               : Done
 
-  Updated           : 10:51:00 AM
+  Updated         : 9:12:34 PM
   Press Ctrl+C to stop.
 ```
 
@@ -937,23 +1026,7 @@ wsProvider.on("block", async (blockNumber) => {
 
 **Track multiple transactions.** Refactor the polling loop into a class and run N monitors with `Promise.all` (JS) or `asyncio.gather` (Python).
 
-**Validate the BTC output target.** Before starting a peg-in monitor, verify the transaction actually sends to the current federation address. If the PowPeg composition changed between when you initiated the peg-in and when you started monitoring, the Bridge will never process it:
-
-```javascript
-async function validatePeginTarget(btcTxHash, expectedFedAddress) {
-  const res  = await fetch(`${BTC_API}/tx/${btcTxHash}`);
-  const tx   = await res.json();
-  const targeted = (tx.vout || []).some(
-    (v) => v.scriptpubkey_address === expectedFedAddress
-  );
-  if (!targeted) {
-    throw new Error(
-      `${btcTxHash} does not send to federation address ${expectedFedAddress}. ` +
-      `Check powpeg.rootstock.io for the current address.`
-    );
-  }
-}
-```
+**Federation address validation is built in.** The peg-in monitor calls `getFederationAddress()` from the Bridge and verifies your BTC transaction actually outputs to that address before starting the polling loop. If the PowPeg composition changed since you sent your BTC, the script throws immediately with a clear error instead of polling forever. This is handled by `validatePeginTarget` inside the script — no extra code needed.
 
 **Watch RPC rate limits.** The free RPC tier allows 25,000 requests/day. At a 60-second poll interval the monitor uses ~1,440 requests/day — well within limits. If you tighten the interval, the retry wrapper already handles transient errors with exponential backoff (2s, 4s, 8s).
 
