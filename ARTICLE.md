@@ -1,8 +1,8 @@
 # How to Build a Real-Time PowPeg Bridge Monitor for Rootstock
 
-Moving Bitcoin into Rootstock's ecosystem gives you EVM compatibility, smart contracts, and DeFi — all still backed by Bitcoin's proof-of-work. But the PowPeg bridge is not instant. A native peg-in takes 100 Bitcoin confirmations (~17 hours). A native peg-out waits for 4,000 Rootstock block confirmations (~34 hours). During that window, most developers and users are flying blind.
+Moving Bitcoin into Rootstock's EVM gives you smart contracts, DeFi, and programmability — all still settled by Bitcoin's proof-of-work. But the PowPeg bridge is deliberately slow. A native peg-in takes 100 Bitcoin confirmations (~17 hours). A native peg-out waits for 4,000 Rootstock block confirmations (~34 hours). During that window, developers and users have no native tooling to watch progress — no block explorer gives you a confirmation countdown, no protocol-level notification fires when funds land.
 
-This tutorial builds a lightweight real-time monitor that tracks peg-in and peg-out transaction status, counts confirmations, estimates time remaining, and optionally fires Telegram or Discord alerts when funds land. The entire system runs from a single script — no backend server required.
+This guide builds a real-time monitor from scratch: a lightweight script that tracks confirmation progress, calculates time remaining, and fires Telegram or Discord alerts when funds arrive. More importantly, it explains *why* the monitor is built the way it is — the Bridge's SPV model, where the confirmation numbers come from, and the failure modes you have to guard against.
 
 The complete code is on GitHub: [github.com/michojekunle/powpeg-monitor](https://github.com/michojekunle/powpeg-monitor)
 
@@ -10,40 +10,53 @@ The complete code is on GitHub: [github.com/michojekunle/powpeg-monitor](https:/
 
 ## Understanding the PowPeg
 
-The PowPeg is Rootstock's native Bitcoin two-way peg. It converts BTC to rBTC (peg-in) and rBTC back to BTC (peg-out). The bridge is a precompiled smart contract at a fixed address on Rootstock:
+The PowPeg is Rootstock's native two-way Bitcoin peg. It converts BTC to rBTC (peg-in) and rBTC back to BTC (peg-out) without a centralized custodian. The mechanism is a precompiled smart contract at a fixed address on every Rootstock node:
 
 ```
 0x0000000000000000000000000000000001000006
 ```
 
-This contract maintains a live SPV view of the Bitcoin blockchain, verifies peg-in requests, and commands peg-outs. Everything you need to monitor is readable from this single address.
+This is not a regular deployed contract — it's a precompile baked into the Rootstock protocol. Every Rootstock node runs the Bridge logic natively. You call it like any EVM contract (via `eth_call`), but the execution is native Go/Java code inside the node.
+
+### The Bridge maintains its own Bitcoin chain view
+
+This is the critical thing to understand before building a monitor: **the Bridge does not trust Blockstream, an external oracle, or you when it comes to Bitcoin block heights.** It maintains its own SPV (Simplified Payment Verification) chain of Bitcoin headers — a full record of every Bitcoin block header, synced by Rootstock nodes themselves.
+
+When you call `getBtcBlockchainBestChainHeight()`, you get the Bridge's own verified BTC chain tip. This is the authoritative number for peg-in confirmation counting. You compare the BTC block your peg-in transaction landed in against this Bridge-internal height — not against Blockstream's API, not against a third-party source.
+
+Why does this matter? Because the Bridge only unlocks rBTC when *it* has seen 100 Bitcoin confirmations (10 on testnet). An external API saying the BTC chain is at block 5,000,000 is irrelevant if the Bridge's SPV chain is still at 4,999,950. The confirmation count you display must use the Bridge's view:
+
+```
+btcConfirmations = bridgeBtcHeight - txBlockHeight + 1
+```
+
+The `+ 1` accounts for the block the transaction itself is included in — the convention is that a transaction has 1 confirmation when the block containing it is the chain tip.
+
+One practical consequence: the Bridge SPV chain can temporarily lag behind the actual Bitcoin network. If the transaction just landed and the Bridge hasn't processed the latest BTC headers yet, this arithmetic gives a negative result. The monitor clamps to zero: `Math.max(0, ...)`.
 
 ### Peg-in flow
 
-1. Send BTC to the current PowPeg federation address (retrieved from `getFederationAddress()` on the Bridge contract)
-2. The Bridge watches the Bitcoin chain in SPV mode
-3. After 100 Bitcoin block confirmations, the Bridge releases equivalent rBTC to your Rootstock address
-4. Estimated time: ~17 hours native, ~20 minutes via Flyover fast mode
+1. Query `getFederationAddress()` from the Bridge contract to get the current federation address
+2. Send BTC to that address from a legacy (non-SegWit) Bitcoin wallet — minimum 0.005 BTC
+3. The Bridge watches Bitcoin in SPV mode — Rootstock nodes relay Bitcoin block headers continuously
+4. After 100 Bitcoin confirmations the Bridge verifies the payment and mints equivalent rBTC to your Rootstock address
+5. Estimated time: ~17 hours native, ~20 minutes via Flyover fast mode
+
+The federation address is not static. The PowPeg federation is a group of PowHSM devices operated by Rootstock node operators, and the address changes when the federation composition changes. **Always call `getFederationAddress()` fresh before sending BTC.** The monitor validates this automatically at startup.
 
 ### Peg-out flow
 
-1. Send rBTC directly to the Bridge contract address on Rootstock (minimum 0.004 rBTC, gas limit 100,000)
-2. The Bridge queues your request — batched peg-outs are processed every ~360 RSK blocks (~3 hours)
-3. After 4,000 RSK block confirmations, PowHSMs sign the Bitcoin transaction and broadcast it
-4. Estimated time: ~34 hours native
+1. Send rBTC directly to the Bridge contract address (`0x0000...000006`) on Rootstock, minimum 0.004 rBTC, gas limit 100,000
+2. The Bridge queues your request — peg-outs are batched every ~360 RSK blocks (~3 hours)
+3. After 4,000 RSK block confirmations (~34 hours), the PowHSM devices sign the Bitcoin transaction with their hardware-secured keys and broadcast it to the Bitcoin network
 
-### What the monitor tracks
+The 4,000 RSK block threshold exists because Rootstock uses merged mining — RSK blocks are mined by Bitcoin miners alongside Bitcoin blocks. Merged mining means RSK's security is anchored to Bitcoin hash rate, but a Rootstock reorganization could theoretically undo a peg-out request. 4,000 blocks (~34 hours) makes such a reorg computationally infeasible.
 
-For peg-in:
-- The Bitcoin transaction hash
-- Current Bitcoin block height vs the block height when your BTC was confirmed
-- `getBtcBlockchainBestChainHeight()` on the Bridge contract for the Bridge's live SPV view
+### What the monitor reads
 
-For peg-out:
-- The Rootstock transaction hash from when you sent rBTC to the Bridge
-- The RSK block when that transaction was included
-- Current RSK block from `eth_blockNumber`
-- `getQueuedPegoutsCount()` and `getNextPegoutCreationBlockNumber()` for queue state
+For peg-in, the monitor needs two numbers: the Bridge's SPV BTC chain height, and the BTC block height where your transaction was confirmed. One comes from the Bridge contract, one from the Bitcoin blockchain API.
+
+For peg-out, everything is on Rootstock: the current block number, the transaction receipt showing which RSK block your tx landed in, the current queue size, and the next batch processing block. No Bitcoin API calls needed — you're watching RSK confirmations accumulate until they cross 4,000.
 
 ---
 
@@ -91,12 +104,14 @@ pip install web3 python-dotenv requests
 
 ## The Bridge Contract ABI
 
-Four read-only functions cover everything the monitor needs. Save this as `bridge-abi.json`:
+The ABI tells ethers.js or web3.py how to encode and decode calls to the Bridge precompile. You only need four read-only functions to monitor both peg directions:
 
-- `getBtcBlockchainBestChainHeight` — Bridge's live SPV view of the BTC chain (peg-in)
-- `getFederationAddress` — current federation address; validated at peg-in startup
-- `getQueuedPegoutsCount` — pending peg-outs in the queue (peg-out display)
-- `getNextPegoutCreationBlockNumber` — next batch processing block (peg-out display)
+- `getBtcBlockchainBestChainHeight` — Bridge's internal SPV view of the Bitcoin chain. This is the authoritative source for peg-in confirmation counting. Returned as `int32` (signed) to match the Bridge's internal representation; in practice it's always positive.
+- `getFederationAddress` — the current PowPeg multisig address on Bitcoin. Validated at startup so the monitor fails fast if your BTC transaction targets an outdated address.
+- `getQueuedPegoutsCount` — how many peg-out requests are currently waiting in the batch queue. Surfaced in the display so you know how busy the queue is.
+- `getNextPegoutCreationBlockNumber` — the RSK block number when the next batch will be assembled. Lets you display how many blocks until the next batch window.
+
+Save this as `bridge-abi.json`:
 
 ```json
 [
@@ -134,6 +149,18 @@ Four read-only functions cover everything the monitor needs. Save this as `bridg
 ---
 
 ## Building the Monitor: JavaScript
+
+The monitor has five moving parts worth understanding before you read the code:
+
+**State persistence.** If the process crashes or you restart it, the alert flags load from `monitor-state.json`. Without this, the monitor would re-fire "peg-in complete" alerts every time it restarts. The file lives in the same directory as the script (`__dirname`), not the current working directory, so it works regardless of where you invoke the script from.
+
+**Retry with exponential backoff.** Both the RSK RPC and the Blockstream API are external services. The RPC can return transient 5xx errors; Blockstream has 504s from its CDN. The `withRetry` wrapper catches these, logs the attempt and delay, and retries up to 3 times with 2s, 4s, 8s waits. A 404 from Blockstream is *not* retried — it means the transaction hash is genuinely wrong, not a transient error. This distinction matters: without it, a typo in the BTC tx hash would silently spin for 3 retries before failing.
+
+**Federation address validation.** The peg-in monitor calls `getFederationAddress()` and verifies that your BTC transaction actually outputs to that address before entering the polling loop. If the PowPeg composition changed since you sent your BTC — which happens periodically — the script throws immediately with a clear error. This catches a common mistake: sending BTC to an outdated federation address and then wondering why rBTC never arrives.
+
+**Confirmation math.** For peg-in: `Math.max(0, bridgeBtcHeight - txBlockHeight + 1)`. The `+1` follows the standard confirmations convention. The `Math.max(0, ...)` clamp handles the case where the Bridge SPV view lags briefly behind the BTC network — without it you'd display a negative confirmation count right after the transaction confirms.
+
+**Poll interval.** Sixty seconds. Bitcoin blocks arrive every ~10 minutes and RSK blocks every ~30 seconds. Polling faster would waste RPC quota without improving the display meaningfully. The free RPC tier (25,000 req/day) allows ~1,440 polls/day at this interval — well within limits even with parallel monitors.
 
 Create `monitor.js`:
 
@@ -502,6 +529,10 @@ node monitor.js pegout <your-rsk-tx-hash>
 ---
 
 ## Building the Monitor: Python
+
+The Python version is functionally identical — same logic, same confirmation math, same retry behavior, same output format. The main structural differences are synchronous I/O (blocking `time.sleep` instead of `setInterval`) and web3.py's contract call syntax.
+
+One subtlety worth knowing: web3.py requires a checksum address (`Web3.to_checksum_address()`). The Bridge address is all-lowercase hex, which web3.py rejects without the checksum step. ethers.js handles this transparently; web3.py does not.
 
 Create `monitor.py`:
 
@@ -907,7 +938,7 @@ curl -H "Content-Type: application/json" \
 
 ## Testnet Walkthrough
 
-Here's an end-to-end example using real testnet transactions.
+Here's an end-to-end walkthrough using real testnet transactions. Reading the output critically — understanding what each field is telling you — is as important as getting the monitor running.
 
 ### Step 1: Get your RPC key
 
@@ -915,7 +946,7 @@ Go to [dashboard.rpc.rootstock.io](https://dashboard.rpc.rootstock.io) or [alche
 
 ### Step 2: Confirm the current federation address
 
-The PowPeg federation address rotates when the PowPeg composition changes. Always query it fresh before sending BTC. Use Node or Python to decode the ABI-encoded response correctly — the raw `eth_call` hex cannot be decoded as plain UTF-8 (the response has a 64-byte ABI header before the string bytes):
+The PowPeg federation rotates when the federation composition changes. Always query it fresh before sending BTC. Use Node or Python to decode the ABI-encoded response correctly — the raw `eth_call` hex cannot be decoded as plain UTF-8 (the response includes a 64-byte ABI header before the string data):
 
 ```javascript
 // Quick one-liner — run from your project directory
@@ -941,13 +972,13 @@ print('Federation address:', bridge.functions.getFederationAddress().call())
 "
 ```
 
-The monitor automatically fetches and validates this at startup for peg-in transactions. At the time of writing (April 2026), the testnet federation address is `2N88sMiizxmbb8Y3yA4AtYmL1RxHogWfoHa`. Verify it yourself before sending anything.
+The monitor validates this automatically at peg-in startup. At the time of writing (April 2026), the testnet federation address is `2N88sMiizxmbb8Y3yA4AtYmL1RxHogWfoHa`. Verify it yourself before sending anything.
 
 ### Step 3: Track a peg-in (BTC → rBTC)
 
 Get tBTC from [bitcoinfaucet.uo1.net](https://bitcoinfaucet.uo1.net) and send at least 0.005 tBTC to the federation address from a legacy (non-SegWit) testnet wallet.
 
-Here's a real confirmed testnet peg-in you can run the monitor against:
+Here's a real confirmed testnet peg-in you can run the monitor against right now:
 
 ```
 BTC tx: a74918ced40b93d8cf9843cc952db41d233fda569ae60cee240292153a529526
@@ -982,7 +1013,12 @@ Output:
   Press Ctrl+C to stop.
 ```
 
-On testnet, 10 confirmations are required instead of 100 — so the wait is about 100 minutes from a fresh transaction.
+Reading this output:
+- **BTC Tx Block: 4918812** — this is where your BTC transaction was included in the Bitcoin testnet chain
+- **Bridge BTC Height: 4925875** — this is the Bridge's own SPV view of the Bitcoin testnet tip, fetched directly from the contract. The Bridge has synced 7,063 Bitcoin blocks past your transaction's block.
+- **Confirmations: 7064 / 10** — computed as `4925875 - 4918812 + 1`. This peg-in completed long ago; you'd only see a live confirmation count climbing on a fresh transaction.
+
+On testnet, 10 confirmations are required instead of 100 — so the wait from a fresh transaction is about 100 minutes.
 
 ### Step 4: Track a peg-out (rBTC → BTC)
 
@@ -1021,13 +1057,20 @@ Output:
   Press Ctrl+C to stop.
 ```
 
+Reading this output:
+- **Tx Block: 7562606** — the RSK block that included your `send rBTC to Bridge` transaction
+- **Current Block: 7565503** — live RSK chain tip, fetched fresh from the RPC each poll
+- **Confirmations: 2897 / 10** — `7565503 - 7562606`. The 4,000 threshold applies on mainnet; testnet uses 10 for rapid iteration
+- **Queue Size: 0 pending pegout(s)** — `getQueuedPegoutsCount()` from the Bridge. Zero means your request has already been batched and dispatched
+- **Next Batch: 175 blocks** — `getNextPegoutCreationBlockNumber() - currentBlock`. This is when the Bridge will assemble the next batch of queued peg-outs. At ~30s per RSK block, 175 blocks is about 87 minutes
+
 ---
 
 ## Hardening for Production
 
 The scripts above are solid for development and personal use. For production handling real funds:
 
-**Switch to WebSocket for RSK.** Replace HTTP polling with `WebSocketProvider` and subscribe to new blocks. Latency drops from 60 seconds to under 2 seconds:
+**Switch to WebSocket for RSK.** Replace HTTP polling with `WebSocketProvider` and subscribe to new blocks. Latency drops from 60 seconds to under 2 seconds. This matters if you're building something user-facing — nobody wants a confirmation counter that only updates once a minute:
 
 ```javascript
 const wsProvider = new ethers.WebSocketProvider(
@@ -1039,11 +1082,11 @@ wsProvider.on("block", async (blockNumber) => {
 });
 ```
 
-**Track multiple transactions.** Refactor the polling loop into a class and run N monitors with `Promise.all` (JS) or `asyncio.gather` (Python).
+**Track multiple transactions concurrently.** The current scripts handle one transaction at a time. Refactor the polling loop into a class and run N monitors with `Promise.all` (JS) or `asyncio.gather` (Python). The state file already supports multiple transactions — each is stored under its own key.
 
-**Federation address validation is built in.** The peg-in monitor calls `getFederationAddress()` from the Bridge and verifies your BTC transaction actually outputs to that address before starting the polling loop. If the PowPeg composition changed since you sent your BTC, the script throws immediately with a clear error instead of polling forever. This is handled by `validatePeginTarget` inside the script — no extra code needed.
+**Federation address changes mid-wait.** The monitor validates the federation address at startup, but a long-running peg-in monitor could start before a federation rotation and continue happily watching a transaction that will never be credited. For production, re-validate the federation address on each poll or subscribe to Bridge events that signal a federation change.
 
-**Watch RPC rate limits.** The free RPC tier allows 25,000 requests/day. At a 60-second poll interval the monitor uses ~1,440 requests/day — well within limits. If you tighten the interval, the retry wrapper already handles transient errors with exponential backoff (2s, 4s, 8s).
+**Watch RPC rate limits.** The free RPC tier allows 25,000 requests/day. At a 60-second poll interval the monitor uses ~1,440 requests/day — well within limits. If you tighten the interval, the retry wrapper already handles transient errors with exponential backoff (2s, 4s, 8s). On mainnet, a peg-in runs for ~17 hours, so you'll make roughly 1,000 polls per transaction — still fine on the free tier.
 
 ---
 
@@ -1065,6 +1108,8 @@ wsProvider.on("block", async (blockNumber) => {
 ---
 
 ## Useful RPC Calls for Debugging
+
+When something looks wrong — the Bridge height seems stuck, the queue count doesn't make sense — these raw calls let you check the state directly without the monitor.
 
 **Bridge's current BTC chain height** (`getBtcBlockchainBestChainHeight`):
 
@@ -1094,13 +1139,11 @@ curl -X POST https://rpc.testnet.rootstock.io/YOUR_API_KEY \
 
 ## What to Build Next
 
-With a working monitor in place:
+**Add Flyover peg-in support.** Flyover uses the Liquidity Bridge Contract (LBC) and settles in ~2 BTC confirmations instead of 100. The Flyover SDK exposes quote and status endpoints — your monitor can wrap these and give users a fast-path option with a dramatically different ETA.
 
-- **Add Flyover peg-in support.** Flyover uses the Liquidity Bridge Contract (LBC) and needs only 2 Bitcoin confirmations. The Flyover SDK provides quote and status endpoints your monitor can wrap.
+**Build a dashboard.** Expose the polling logic via a simple Express or FastAPI server with a React frontend showing live progress bars for all active bridge transactions. The state file already has everything you need; the server just reads it.
 
-- **Build a dashboard.** Expose the polling logic via a simple Express or FastAPI server with a React frontend showing live progress bars for all active bridge transactions.
-
-- **Subscribe to Bridge events.** Use `eth_subscribe` with a logs filter on the Bridge address to build a production-grade indexer instead of polling.
+**Subscribe to Bridge events.** Use `eth_subscribe` with a logs filter on the Bridge address to build a production-grade indexer instead of polling. Bridge events include peg-in registration, peg-out requests, and batch releases — a complete picture of Bridge activity without needing to poll for individual transactions.
 
 ---
 
