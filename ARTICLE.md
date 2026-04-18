@@ -182,7 +182,8 @@ function loadState() {
     return fs.existsSync(STATE_FILE)
       ? JSON.parse(fs.readFileSync(STATE_FILE, "utf8"))
       : {};
-  } catch {
+  } catch (err) {
+    console.warn(`  Warning: could not read state file, starting fresh. (${err.message})`);
     return {};
   }
 }
@@ -210,7 +211,7 @@ function printStatus(label, data) {
   for (const [k, v] of Object.entries(data)) {
     console.log(`  ${k.padEnd(18)}: ${v}`);
   }
-  console.log(`\n  Updated         : ${new Date().toLocaleTimeString()}`);
+  console.log(`\n  ${"Updated".padEnd(18)}: ${new Date().toLocaleTimeString()}`);
   console.log("  Press Ctrl+C to stop.\n");
 }
 
@@ -258,7 +259,9 @@ async function withRetry(fn, maxRetries = 3) {
       return await fn();
     } catch (err) {
       if (i === maxRetries - 1) throw err;
-      await new Promise((r) => setTimeout(r, 2000 * Math.pow(2, i)));
+      const delay = 2000 * Math.pow(2, i);
+      console.warn(`  Retry ${i + 1}/${maxRetries - 1}: ${err.message} — waiting ${delay / 1000}s`);
+      await new Promise((r) => setTimeout(r, delay));
     }
   }
 }
@@ -266,10 +269,16 @@ async function withRetry(fn, maxRetries = 3) {
 // ── Peg-In Monitor ─────────────────────────────────────────────────────────────
 
 async function validatePeginTarget(btcTxHash, expectedFedAddress) {
-  const res = await withRetry(() => fetch(`${BTC_API}/tx/${btcTxHash}`));
-  if (!res.ok) {
-    throw new Error(`Blockstream API returned ${res.status} for tx ${btcTxHash}. Check the hash is correct and on ${NETWORK}.`);
-  }
+  // Treat 5xx as transient (retry); treat 404 as definitive bad hash (throw immediately).
+  const res = await withRetry(async () => {
+    const r = await fetch(`${BTC_API}/tx/${btcTxHash}`);
+    if (r.status === 404) {
+      throw Object.assign(new Error(`Tx ${btcTxHash} not found on ${NETWORK}. Check the hash.`), { fatal: true });
+    }
+    if (!r.ok) throw new Error(`Blockstream HTTP ${r.status}`);
+    return r;
+  });
+
   const tx = await res.json();
   if (!tx?.vout) {
     throw new Error(`Could not fetch outputs for tx ${btcTxHash}.`);
@@ -304,17 +313,14 @@ async function monitorPegin(btcTxHash, rskAddress) {
 
   async function poll() {
     try {
-      const [bridgeBtcHeight, btcRes] = await Promise.all([
+      const [bridgeBtcHeight, txData] = await Promise.all([
         withRetry(() => bridge.getBtcBlockchainBestChainHeight()),
-        withRetry(() => fetch(`${BTC_API}/tx/${btcTxHash}`)),
+        withRetry(async () => {
+          const r = await fetch(`${BTC_API}/tx/${btcTxHash}`);
+          if (!r.ok) throw new Error(`Blockstream HTTP ${r.status}`);
+          return r.json();
+        }),
       ]);
-
-      if (!btcRes.ok) {
-        console.error(`  Blockstream API error ${btcRes.status} — will retry next poll.`);
-        return;
-      }
-
-      const txData = await btcRes.json();
 
       if (!txData?.status?.confirmed) {
         printStatus("PEG-IN (BTC → rBTC)", {
@@ -480,6 +486,7 @@ if (mode === "pegin") {
   console.error("Usage: node monitor.js [pegin|pegout] <txHash> [rskAddress]");
   process.exit(1);
 }
+
 ```
 
 Run it:
@@ -558,8 +565,8 @@ def load_state() -> dict:
         if os.path.exists(STATE_FILE):
             with open(STATE_FILE) as f:
                 return json.load(f)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"  Warning: could not read state file, starting fresh. ({e})")
     return {}
 
 def save_state(state: dict) -> None:
@@ -627,17 +634,23 @@ def with_retry(fn, max_retries: int = 3):
         except Exception as e:
             if i == max_retries - 1:
                 raise
-            time.sleep(2 ** (i + 1))
+            delay = 2 ** (i + 1)
+            print(f"  Retry {i + 1}/{max_retries - 1}: {e} — waiting {delay}s")
+            time.sleep(delay)
 
 # ── Peg-In helpers ─────────────────────────────────────────────────────────────
 
 def validate_pegin_target(btc_tx_hash: str, expected_fed_address: str) -> None:
-    res = with_retry(lambda: requests.get(f"{BTC_API}/tx/{btc_tx_hash}", timeout=10))
-    if res.status_code != 200:
-        raise ValueError(
-            f"Blockstream API returned {res.status_code} for tx {btc_tx_hash}. "
-            f"Check the hash is correct and on {NETWORK}."
-        )
+    # 404 = invalid hash (fatal); 5xx = transient (retried by with_retry via raised exception)
+    def fetch_tx():
+        r = requests.get(f"{BTC_API}/tx/{btc_tx_hash}", timeout=10)
+        if r.status_code == 404:
+            raise ValueError(f"Tx {btc_tx_hash} not found on {NETWORK}. Check the hash.")
+        if r.status_code != 200:
+            raise RuntimeError(f"Blockstream HTTP {r.status_code} — will retry")
+        return r
+
+    res = with_retry(fetch_tx)
     tx = res.json()
     if not tx.get("vout"):
         raise ValueError(f"Could not fetch outputs for tx {btc_tx_hash}.")
@@ -675,12 +688,13 @@ def monitor_pegin(btc_tx_hash: str, rsk_address: str) -> None:
             bridge_btc_height = with_retry(
                 lambda: bridge.functions.getBtcBlockchainBestChainHeight().call()
             )
-            res = with_retry(lambda: requests.get(f"{BTC_API}/tx/{btc_tx_hash}", timeout=10))
-            if res.status_code != 200:
-                print(f"  Blockstream API error {res.status_code} — will retry next poll.")
-                time.sleep(POLL_INTERVAL)
-                continue
-            tx = res.json()
+            def fetch_btc_tx():
+                r = requests.get(f"{BTC_API}/tx/{btc_tx_hash}", timeout=10)
+                if r.status_code != 200:
+                    raise RuntimeError(f"Blockstream HTTP {r.status_code}")
+                return r.json()
+
+            tx = with_retry(fetch_btc_tx)
 
             if not tx.get("status", {}).get("confirmed"):
                 print_status("PEG-IN (BTC → rBTC)", {
@@ -836,6 +850,7 @@ if __name__ == "__main__":
     else:
         print("Mode must be 'pegin' or 'pegout'")
         sys.exit(1)
+
 ```
 
 Run it:

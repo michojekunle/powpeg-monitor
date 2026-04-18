@@ -57,8 +57,8 @@ def load_state() -> dict:
         if os.path.exists(STATE_FILE):
             with open(STATE_FILE) as f:
                 return json.load(f)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"  Warning: could not read state file, starting fresh. ({e})")
     return {}
 
 def save_state(state: dict) -> None:
@@ -126,17 +126,23 @@ def with_retry(fn, max_retries: int = 3):
         except Exception as e:
             if i == max_retries - 1:
                 raise
-            time.sleep(2 ** (i + 1))
+            delay = 2 ** (i + 1)
+            print(f"  Retry {i + 1}/{max_retries - 1}: {e} — waiting {delay}s")
+            time.sleep(delay)
 
 # ── Peg-In helpers ─────────────────────────────────────────────────────────────
 
 def validate_pegin_target(btc_tx_hash: str, expected_fed_address: str) -> None:
-    res = with_retry(lambda: requests.get(f"{BTC_API}/tx/{btc_tx_hash}", timeout=10))
-    if res.status_code != 200:
-        raise ValueError(
-            f"Blockstream API returned {res.status_code} for tx {btc_tx_hash}. "
-            f"Check the hash is correct and on {NETWORK}."
-        )
+    # 404 = invalid hash (fatal); 5xx = transient (retried by with_retry via raised exception)
+    def fetch_tx():
+        r = requests.get(f"{BTC_API}/tx/{btc_tx_hash}", timeout=10)
+        if r.status_code == 404:
+            raise ValueError(f"Tx {btc_tx_hash} not found on {NETWORK}. Check the hash.")
+        if r.status_code != 200:
+            raise RuntimeError(f"Blockstream HTTP {r.status_code} — will retry")
+        return r
+
+    res = with_retry(fetch_tx)
     tx = res.json()
     if not tx.get("vout"):
         raise ValueError(f"Could not fetch outputs for tx {btc_tx_hash}.")
@@ -174,12 +180,13 @@ def monitor_pegin(btc_tx_hash: str, rsk_address: str) -> None:
             bridge_btc_height = with_retry(
                 lambda: bridge.functions.getBtcBlockchainBestChainHeight().call()
             )
-            res = with_retry(lambda: requests.get(f"{BTC_API}/tx/{btc_tx_hash}", timeout=10))
-            if res.status_code != 200:
-                print(f"  Blockstream API error {res.status_code} — will retry next poll.")
-                time.sleep(POLL_INTERVAL)
-                continue
-            tx = res.json()
+            def fetch_btc_tx():
+                r = requests.get(f"{BTC_API}/tx/{btc_tx_hash}", timeout=10)
+                if r.status_code != 200:
+                    raise RuntimeError(f"Blockstream HTTP {r.status_code}")
+                return r.json()
+
+            tx = with_retry(fetch_btc_tx)
 
             if not tx.get("status", {}).get("confirmed"):
                 print_status("PEG-IN (BTC → rBTC)", {
