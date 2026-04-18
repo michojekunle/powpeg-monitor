@@ -1,0 +1,7 @@
+node_modules/
+.env
+__pycache__/
+*.pyc
+*.pyo
+monitor-state.json
+.DS_Store

@@ -1,0 +1,18 @@
+{
+  "name": "powpeg-monitor",
+  "version": "1.0.0",
+  "description": "Real-time PowPeg bridge monitor for Rootstock — tracks peg-in and peg-out confirmations with optional Telegram/Discord alerts",
+  "main": "monitor.js",
+  "scripts": {
+    "pegin": "node monitor.js pegin",
+    "pegout": "node monitor.js pegout"
+  },
+  "author": "michojekunle",
+  "license": "MIT",
+  "keywords": ["rootstock", "bitcoin", "rbtc", "powpeg", "bridge", "monitor"],
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "ethers": "^6.16.0",
+    "node-fetch": "^3.3.2"
+  }
+}
