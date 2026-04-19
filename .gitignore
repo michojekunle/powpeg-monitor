@@ -4,6 +4,6 @@ __pycache__/
 *.pyc
 *.pyo
 monitor-state.json
+monitor-state-test-tmp.json
 .DS_Store
-
 .npm-cache

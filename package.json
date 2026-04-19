@@ -5,11 +5,21 @@
   "main": "monitor.js",
   "scripts": {
     "pegin": "node monitor.js pegin",
-    "pegout": "node monitor.js pegout"
+    "pegout": "node monitor.js pegout",
+    "test": "node test.js",
+    "test:py": "python3 test.py",
+    "test:all": "bash test.sh"
   },
   "author": "michojekunle",
   "license": "MIT",
-  "keywords": ["rootstock", "bitcoin", "rbtc", "powpeg", "bridge", "monitor"],
+  "keywords": [
+    "rootstock",
+    "bitcoin",
+    "rbtc",
+    "powpeg",
+    "bridge",
+    "monitor"
+  ],
   "dependencies": {
     "dotenv": "^17.4.2",
     "ethers": "^6.16.0",

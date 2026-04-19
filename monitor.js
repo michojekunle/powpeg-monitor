@@ -328,21 +328,38 @@ async function monitorPegout(rskTxHash) {
 
 // ── Entry point ────────────────────────────────────────────────────────────────
 
-const [, , mode, txHash, rskAddress] = process.argv;
+if (require.main === module) {
+  const [, , mode, txHash, rskAddress] = process.argv;
 
-if (mode === "pegin") {
-  if (!txHash || !rskAddress) {
-    console.error("Usage: node monitor.js pegin <btcTxHash> <rskAddress>");
+  if (mode === "pegin") {
+    if (!txHash || !rskAddress) {
+      console.error("Usage: node monitor.js pegin <btcTxHash> <rskAddress>");
+      process.exit(1);
+    }
+    monitorPegin(txHash, rskAddress);
+  } else if (mode === "pegout") {
+    if (!txHash) {
+      console.error("Usage: node monitor.js pegout <rskTxHash>");
+      process.exit(1);
+    }
+    monitorPegout(txHash);
+  } else {
+    console.error("Usage: node monitor.js [pegin|pegout] <txHash> [rskAddress]");
     process.exit(1);
   }
-  monitorPegin(txHash, rskAddress);
-} else if (mode === "pegout") {
-  if (!txHash) {
-    console.error("Usage: node monitor.js pegout <rskTxHash>");
-    process.exit(1);
-  }
-  monitorPegout(txHash);
-} else {
-  console.error("Usage: node monitor.js [pegin|pegout] <txHash> [rskAddress]");
-  process.exit(1);
 }
+
+module.exports = {
+  withRetry,
+  loadState,
+  saveState,
+  secondsToHuman,
+  validatePeginTarget,
+  provider,
+  bridge,
+  NETWORK,
+  PEGIN_REQUIRED,
+  PEGOUT_REQUIRED,
+  BTC_API,
+  STATE_FILE,
+};

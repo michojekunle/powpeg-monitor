@@ -39,8 +39,19 @@ npm install
 
 **Python:**
 ```bash
-pip install web3 python-dotenv requests
+# Install into the same Python you will run the script with.
+# IMPORTANT: use "python3.x -m pip" not a bare "pip3" — on macOS the two
+# can point to different interpreters, causing "module not found" errors.
+python3 -m pip install web3 python-dotenv requests
 ```
+
+> **Python version note:** Python 3.10–3.13 recommended. If you're on macOS with Homebrew Python 3.14 and see a `pyexpat` / `libexpat` error during install, install a supported version first:
+> ```bash
+> brew install python@3.12
+> python3.12 -m pip install web3 python-dotenv requests
+> python3.12 monitor.py pegin ...
+> ```
+> `./test.sh` detects and uses a working Python automatically.
 
 ---
 
@@ -75,11 +86,49 @@ node monitor.js pegout <rskTxHash>
 
 ```bash
 # Monitor a peg-in
-python monitor.py pegin <btcTxHash> <yourRskAddress>
+python3 monitor.py pegin <btcTxHash> <yourRskAddress>
 
 # Monitor a peg-out
-python monitor.py pegout <rskTxHash>
+python3 monitor.py pegout <rskTxHash>
 ```
+
+### Test with real transactions (no wallet needed)
+
+These confirmed testnet transactions let you verify the monitor immediately — no BTC or rBTC required.
+
+| Field | Value |
+|-------|-------|
+| BTC peg-in tx | `a74918ced40b93d8cf9843cc952db41d233fda569ae60cee240292153a529526` |
+| BTC testnet block | 4,918,812 |
+| RSK peg-out tx | `0x7695bb4c1dbaf9840d3cafb3fa539162f5f116e7d74cf25bad604a9dd4669d19` |
+| RSK testnet block | 7,562,606 |
+| Dummy RSK address | `0x742d35Cc6634C0553241234561234561234567890` |
+
+**JavaScript:**
+```bash
+# Peg-in (BTC → rBTC)
+node monitor.js pegin \
+  a74918ced40b93d8cf9843cc952db41d233fda569ae60cee240292153a529526 \
+  0x742d35Cc6634C0553241234561234561234567890
+
+# Peg-out (rBTC → BTC)
+node monitor.js pegout \
+  0x7695bb4c1dbaf9840d3cafb3fa539162f5f116e7d74cf25bad604a9dd4669d19
+```
+
+**Python:**
+```bash
+# Peg-in (BTC → rBTC)
+python3 monitor.py pegin \
+  a74918ced40b93d8cf9843cc952db41d233fda569ae60cee240292153a529526 \
+  0x742d35Cc6634C0553241234561234561234567890
+
+# Peg-out (rBTC → BTC)
+python3 monitor.py pegout \
+  0x7695bb4c1dbaf9840d3cafb3fa539162f5f116e7d74cf25bad604a9dd4669d19
+```
+
+Both transactions show `Status: ✓ COMPLETE` — they were confirmed long ago. The monitor validates Bridge contract calls, Blockstream API, and confirmation math. To see a live countdown, send your own testnet transaction.
 
 ---
 
@@ -112,6 +161,37 @@ python monitor.py pegout <rskTxHash>
 **Peg-out monitoring** reads the RSK transaction receipt's block number, then computes `currentBlock - txBlock`. It also polls `getQueuedPegoutsCount` and `getNextPegoutCreationBlockNumber` from the Bridge to show queue state.
 
 State is persisted to `monitor-state.json` so the monitor resumes from the correct alert state after a restart.
+
+---
+
+## Running the test suite
+
+A single script verifies everything end-to-end — dependencies, Bridge contract calls, Blockstream API, state persistence, retry logic, live monitor output, and alert endpoints:
+
+```bash
+chmod +x test.sh   # first time only
+./test.sh
+```
+
+The script auto-detects a working Python 3.10–3.13 and installs packages into **that exact interpreter** (using `$PYTHON -m pip`), avoiding the macOS pip-mismatch issue that was breaking installs.
+
+Options:
+```bash
+./test.sh --js-only    # JavaScript tests only
+./test.sh --py-only    # Python tests only
+./test.sh --smoke      # Live monitor smoke tests only (peg-in + peg-out output)
+./test.sh --alerts     # Alert endpoint tests only (Telegram + Discord)
+./test.sh --no-smoke   # Skip the live monitor smoke tests
+./test.sh --no-alerts  # Skip alert endpoint tests
+```
+
+Or run the language-specific suites directly:
+```bash
+node test.js       # JS: 27 tests — utilities, state, retry, Bridge, Blockstream, alerts
+python3 test.py    # Python: equivalent coverage
+```
+
+All tests use real confirmed testnet transactions as fixtures and hit the live Bridge contract, so a valid `RSK_RPC_URL` in `.env` is required.
 
 ---
 

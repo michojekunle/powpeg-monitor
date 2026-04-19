@@ -97,8 +97,20 @@ npm install
 
 **Python:**
 ```bash
-pip install web3 python-dotenv requests
+# Install into the same interpreter you will run the script with.
+# On macOS, a bare 'pip3' can point to a *different* Python than 'python3'
+# (e.g. pip3 → 3.14 while python3 → 3.12), causing silent "module not found"
+# errors at runtime. Use 'python3 -m pip' to guarantee they match.
+python3 -m pip install web3 python-dotenv requests
 ```
+
+> **Python version note:** Python 3.10–3.13 recommended. If you're on macOS with Homebrew's default Python and see a `pyexpat` / `libexpat` error, install a supported version and target it explicitly:
+> ```bash
+> brew install python@3.12
+> python3.12 -m pip install web3 python-dotenv requests
+> python3.12 monitor.py pegin ...
+> ```
+> `./test.sh` detects and uses a working Python automatically — it always installs packages via `$PYTHON -m pip` to avoid this class of problem.
 
 ---
 
@@ -933,6 +945,76 @@ curl -H "Content-Type: application/json" \
   -d '{"content": "PowPeg monitor test"}' \
   "$DISCORD_WEBHOOK_URL"
 ```
+
+---
+
+## Verifying Everything Works
+
+Before doing anything with real transactions, run the test suite to confirm your setup is solid. A single bash script checks dependencies, installs packages via `$PYTHON -m pip`, runs both the JS and Python test suites, smoke-tests the live monitor output, and verifies your alert endpoints:
+
+```bash
+chmod +x test.sh   # first time only
+./test.sh
+```
+
+The script auto-detects the best working Python 3.10–3.13 on your system and always installs packages into **that exact interpreter** — avoiding the pip-mismatch issue that causes silent import failures on macOS when `pip3` and `python3` target different versions.
+
+Or run the language-specific suites directly:
+
+```bash
+node test.js     # JS: 27 tests covering utilities, state, retry, Bridge calls, Blockstream API, alerts
+python3 test.py  # Python: equivalent coverage
+```
+
+The test suites use two real confirmed testnet transactions — a peg-in and a peg-out — as fixtures. They hit the live Bridge contract and Blockstream API to verify everything is wired up correctly. All tests should pass before you try monitoring a live transaction.
+
+Options if you don't want the full suite:
+```bash
+./test.sh --js-only    # JavaScript tests only
+./test.sh --py-only    # Python tests only
+./test.sh --smoke      # Live monitor smoke tests (peg-in + peg-out output)
+./test.sh --alerts     # Alert endpoint tests only (Telegram + Discord)
+./test.sh --no-smoke   # Skip live monitor tests
+./test.sh --no-alerts  # Skip alert tests
+```
+
+### Ready-to-use test transactions
+
+You can run the monitor against these confirmed testnet transactions right now, without sending any BTC or rBTC yourself:
+
+| Field | Value |
+|-------|-------|
+| BTC peg-in tx | `a74918ced40b93d8cf9843cc952db41d233fda569ae60cee240292153a529526` |
+| BTC testnet block | 4,918,812 |
+| RSK peg-out tx | `0x7695bb4c1dbaf9840d3cafb3fa539162f5f116e7d74cf25bad604a9dd4669d19` |
+| RSK testnet block | 7,562,606 |
+| Dummy RSK address | `0x742d35Cc6634C0553241234561234561234567890` |
+
+**JavaScript:**
+```bash
+# Peg-in (BTC → rBTC) — 0.005 tBTC, confirmed at BTC testnet block 4,918,812
+node monitor.js pegin \
+  a74918ced40b93d8cf9843cc952db41d233fda569ae60cee240292153a529526 \
+  0x742d35Cc6634C0553241234561234561234567890
+
+# Peg-out (rBTC → BTC) — 0.005 tRBTC, confirmed at RSK testnet block 7,562,606
+node monitor.js pegout \
+  0x7695bb4c1dbaf9840d3cafb3fa539162f5f116e7d74cf25bad604a9dd4669d19
+```
+
+**Python:**
+```bash
+# Peg-in (BTC → rBTC)
+python3 monitor.py pegin \
+  a74918ced40b93d8cf9843cc952db41d233fda569ae60cee240292153a529526 \
+  0x742d35Cc6634C0553241234561234561234567890
+
+# Peg-out (rBTC → BTC)
+python3 monitor.py pegout \
+  0x7695bb4c1dbaf9840d3cafb3fa539162f5f116e7d74cf25bad604a9dd4669d19
+```
+
+Both show `Status: ✓ COMPLETE` since they were confirmed long ago — but they verify that the Bridge contract calls, Blockstream API, confirmation math, and display all work correctly. To see a live countdown, send your own testnet transaction in the walkthrough below.
 
 ---
 
