@@ -16,7 +16,7 @@ The PowPeg is Rootstock's native two-way Bitcoin peg. It converts BTC to rBTC (p
 0x0000000000000000000000000000000001000006
 ```
 
-This is not a regular deployed contract — it's a precompile baked into the Rootstock protocol. Every Rootstock node runs the Bridge logic natively. You call it like any EVM contract (via `eth_call`), but the execution is native Go/Java code inside the node.
+This is not a regular deployed contract — it's a precompile baked into the Rootstock protocol. Every Rootstock node runs the Bridge logic natively. You call it like any EVM contract (via `eth_call`), but the execution is native code inside the node.
 
 ### The Bridge maintains its own Bitcoin chain view
 
@@ -30,7 +30,7 @@ Why does this matter? Because the Bridge only unlocks rBTC when *it* has seen 10
 btcConfirmations = bridgeBtcHeight - txBlockHeight + 1
 ```
 
-The `+ 1` accounts for the block the transaction itself is included in — the convention is that a transaction has 1 confirmation when the block containing it is the chain tip.
+The `+ 1` accounts for the block the transaction itself is included in — a transaction has 1 confirmation when the block containing it is the chain tip.
 
 One practical consequence: the Bridge SPV chain can temporarily lag behind the actual Bitcoin network. If the transaction just landed and the Bridge hasn't processed the latest BTC headers yet, this arithmetic gives a negative result. The monitor clamps to zero: `Math.max(0, ...)`.
 
@@ -62,7 +62,7 @@ For peg-out, everything is on Rootstock: the current block number, the transacti
 
 ## Prerequisites
 
-- Node.js v18+ (JavaScript) or Python 3.10+ (Python)
+- Node.js v18+ (JavaScript) or Python 3.10–3.13 (Python)
 - A Rootstock RPC endpoint — free at [dashboard.rpc.rootstock.io](https://dashboard.rpc.rootstock.io) (25,000 req/day) or via [Alchemy](https://alchemy.com)
 - A Bitcoin transaction hash (peg-in) or Rootstock transaction hash (peg-out) to monitor
 - Optional: Telegram bot token + chat ID, or a Discord webhook URL
@@ -97,20 +97,18 @@ npm install
 
 **Python:**
 ```bash
-# Install into the same interpreter you will run the script with.
-# On macOS, a bare 'pip3' can point to a *different* Python than 'python3'
-# (e.g. pip3 → 3.14 while python3 → 3.12), causing silent "module not found"
-# errors at runtime. Use 'python3 -m pip' to guarantee they match.
+# Use 'python3 -m pip' — not a bare 'pip3'. On macOS, pip3 can point to a
+# different Python than python3, causing silent "module not found" errors at runtime.
 python3 -m pip install web3 python-dotenv requests
 ```
 
-> **Python version note:** Python 3.10–3.13 recommended. If you're on macOS with Homebrew's default Python and see a `pyexpat` / `libexpat` error, install a supported version and target it explicitly:
+> **Python version note:** Python 3.10–3.13 recommended. Python 3.14 has a known `pyexpat`/`libexpat` incompatibility on macOS that breaks `web3` installation. If you hit this:
 > ```bash
 > brew install python@3.12
 > python3.12 -m pip install web3 python-dotenv requests
 > python3.12 monitor.py pegin ...
 > ```
-> `./test.sh` detects and uses a working Python automatically — it always installs packages via `$PYTHON -m pip` to avoid this class of problem.
+> The test script (`./test.sh`) detects and uses a working Python automatically.
 
 ---
 
@@ -164,15 +162,17 @@ Save this as `bridge-abi.json`:
 
 The monitor has five moving parts worth understanding before you read the code:
 
-**State persistence.** If the process crashes or you restart it, the alert flags load from `monitor-state.json`. Without this, the monitor would re-fire "peg-in complete" alerts every time it restarts. The file lives in the same directory as the script (`__dirname`), not the current working directory, so it works regardless of where you invoke the script from.
+**`FatalError` vs retryable errors.** Both the RSK RPC and the Blockstream API can return transient 5xx errors that warrant a retry. But a 404 from Blockstream means your BTC tx hash is definitively wrong — retrying won't help. The monitor uses a `FatalError` subclass to make this distinction explicit: `withRetry` passes `FatalError` through immediately without retrying, while any other error triggers up to 3 attempts with 2s, 4s, 8s waits. This pattern is safer than tagging properties onto Error objects because the type check is enforced by the language, not by convention.
 
-**Retry with exponential backoff.** Both the RSK RPC and the Blockstream API are external services. The RPC can return transient 5xx errors; Blockstream has 504s from its CDN. The `withRetry` wrapper catches these, logs the attempt and delay, and retries up to 3 times with 2s, 4s, 8s waits. A 404 from Blockstream is *not* retried — it means the transaction hash is genuinely wrong, not a transient error. This distinction matters: without it, a typo in the BTC tx hash would silently spin for 3 retries before failing.
+**State persistence.** If the process crashes or you restart it, the alert flags load from `monitor-state.json`. Without this, the monitor would re-fire "peg-in complete" alerts every time it restarts. The file lives in the same directory as the script (`__dirname`), not the current working directory, so it works regardless of where you invoke the script from.
 
 **Federation address validation.** The peg-in monitor calls `getFederationAddress()` and verifies that your BTC transaction actually outputs to that address before entering the polling loop. If the PowPeg composition changed since you sent your BTC — which happens periodically — the script throws immediately with a clear error. This catches a common mistake: sending BTC to an outdated federation address and then wondering why rBTC never arrives.
 
 **Confirmation math.** For peg-in: `Math.max(0, bridgeBtcHeight - txBlockHeight + 1)`. The `+1` follows the standard confirmations convention. The `Math.max(0, ...)` clamp handles the case where the Bridge SPV view lags briefly behind the BTC network — without it you'd display a negative confirmation count right after the transaction confirms.
 
-**Poll interval.** Sixty seconds. Bitcoin blocks arrive every ~10 minutes and RSK blocks every ~30 seconds. Polling faster would waste RPC quota without improving the display meaningfully. The free RPC tier (25,000 req/day) allows ~1,440 polls/day at this interval — well within limits even with parallel monitors.
+**Poll interval.** Sixty seconds. Bitcoin blocks arrive every ~10 minutes and RSK blocks every ~30 seconds. Polling faster would waste RPC quota without improving the display meaningfully. The free RPC tier (25,000 req/day) allows ~1,440 polls/day at this interval — well within limits.
+
+**Library vs CLI.** The entry point is wrapped in `if (require.main === module)` and internals are exported via `module.exports`. This means the monitor works both as a CLI tool (`node monitor.js pegin ...`) and as a module that test suites can import and unit-test directly.
 
 Create `monitor.js`:
 
@@ -185,7 +185,16 @@ const path = require("path");
 require("dotenv").config();
 
 // Node 18+ has fetch built-in; fall back to node-fetch for older runtimes
-const fetch = globalThis.fetch ?? require("node-fetch").default ?? require("node-fetch");
+const _nf   = typeof globalThis.fetch === "undefined" ? require("node-fetch") : null;
+const fetch = globalThis.fetch ?? _nf.default ?? _nf;
+
+// Errors that should never be retried (bad tx hash, wrong network, etc.)
+class FatalError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "FatalError";
+  }
+}
 
 // ── Config ─────────────────────────────────────────────────────────────────────
 
@@ -297,9 +306,9 @@ async function withRetry(fn, maxRetries = 3) {
     try {
       return await fn();
     } catch (err) {
-      if (i === maxRetries - 1) throw err;
+      if (err instanceof FatalError || i === maxRetries - 1) throw err;
       const delay = 2000 * Math.pow(2, i);
-      console.warn(`  Retry ${i + 1}/${maxRetries - 1}: ${err.message} — waiting ${delay / 1000}s`);
+      console.warn(`  [attempt ${i + 1}/${maxRetries} failed] ${err.message} — retrying in ${delay / 1000}s`);
       await new Promise((r) => setTimeout(r, delay));
     }
   }
@@ -308,11 +317,12 @@ async function withRetry(fn, maxRetries = 3) {
 // ── Peg-In Monitor ─────────────────────────────────────────────────────────────
 
 async function validatePeginTarget(btcTxHash, expectedFedAddress) {
-  // Treat 5xx as transient (retry); treat 404 as definitive bad hash (throw immediately).
+  // FatalError on 404 — bad tx hash, thrown immediately without retry.
+  // Any other non-2xx is transient (CDN timeout, rate limit) and gets retried.
   const res = await withRetry(async () => {
     const r = await fetch(`${BTC_API}/tx/${btcTxHash}`);
     if (r.status === 404) {
-      throw Object.assign(new Error(`Tx ${btcTxHash} not found on ${NETWORK}. Check the hash.`), { fatal: true });
+      throw new FatalError(`Tx ${btcTxHash} not found on ${NETWORK}. Check the hash.`);
     }
     if (!r.ok) throw new Error(`Blockstream HTTP ${r.status}`);
     return r;
@@ -506,26 +516,45 @@ async function monitorPegout(rskTxHash) {
 }
 
 // ── Entry point ────────────────────────────────────────────────────────────────
+// Guarded with require.main === module so test suites can import internals
+// without triggering the CLI entry point.
 
-const [, , mode, txHash, rskAddress] = process.argv;
+if (require.main === module) {
+  const [, , mode, txHash, rskAddress] = process.argv;
 
-if (mode === "pegin") {
-  if (!txHash || !rskAddress) {
-    console.error("Usage: node monitor.js pegin <btcTxHash> <rskAddress>");
+  if (mode === "pegin") {
+    if (!txHash || !rskAddress) {
+      console.error("Usage: node monitor.js pegin <btcTxHash> <rskAddress>");
+      process.exit(1);
+    }
+    monitorPegin(txHash, rskAddress);
+  } else if (mode === "pegout") {
+    if (!txHash) {
+      console.error("Usage: node monitor.js pegout <rskTxHash>");
+      process.exit(1);
+    }
+    monitorPegout(txHash);
+  } else {
+    console.error("Usage: node monitor.js [pegin|pegout] <txHash> [rskAddress]");
     process.exit(1);
   }
-  monitorPegin(txHash, rskAddress);
-} else if (mode === "pegout") {
-  if (!txHash) {
-    console.error("Usage: node monitor.js pegout <rskTxHash>");
-    process.exit(1);
-  }
-  monitorPegout(txHash);
-} else {
-  console.error("Usage: node monitor.js [pegin|pegout] <txHash> [rskAddress]");
-  process.exit(1);
 }
 
+module.exports = {
+  FatalError,
+  withRetry,
+  loadState,
+  saveState,
+  secondsToHuman,
+  validatePeginTarget,
+  provider,
+  bridge,
+  NETWORK,
+  PEGIN_REQUIRED,
+  PEGOUT_REQUIRED,
+  BTC_API,
+  STATE_FILE,
+};
 ```
 
 Run it:
@@ -542,9 +571,13 @@ node monitor.js pegout <your-rsk-tx-hash>
 
 ## Building the Monitor: Python
 
-The Python version is functionally identical — same logic, same confirmation math, same retry behavior, same output format. The main structural differences are synchronous I/O (blocking `time.sleep` instead of `setInterval`) and web3.py's contract call syntax.
+The Python version is functionally identical — same logic, same confirmation math, same retry behavior, same output format. Three structural differences worth noting:
 
-One subtlety worth knowing: web3.py requires a checksum address (`Web3.to_checksum_address()`). The Bridge address is all-lowercase hex, which web3.py rejects without the checksum step. ethers.js handles this transparently; web3.py does not.
+**Synchronous I/O.** Python uses a blocking `while True` / `time.sleep(60)` loop instead of `setInterval`. Simpler to reason about; works well for a single-transaction monitor.
+
+**`FatalError` exception class.** Same pattern as JS — `with_retry` explicitly catches `FatalError` and re-raises it without retrying. Any other exception triggers the exponential backoff loop.
+
+**Checksum addresses.** `web3.py` requires `Web3.to_checksum_address()` for contract calls. The Bridge address is all-lowercase hex in the `.env` file — without this step, web3.py raises a `ValueError`. ethers.js handles this transparently.
 
 Create `monitor.py`:
 
@@ -566,6 +599,10 @@ from dotenv import load_dotenv
 from web3 import Web3
 
 load_dotenv()
+
+# Errors that should never be retried (bad tx hash, wrong network, etc.)
+class FatalError(Exception):
+    pass
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 
@@ -622,9 +659,9 @@ def seconds_to_human(seconds: int) -> str:
     if seconds < 60:
         return f"{seconds}s"
     if seconds < 3600:
-        return f"{seconds // 60}m"
+        return f"{round(seconds / 60)}m"
     h = seconds // 3600
-    m = (seconds % 3600) // 60
+    m = round((seconds % 3600) / 60)
     return f"{h}h {m}m"
 
 def print_status(label: str, data: dict) -> None:
@@ -674,21 +711,23 @@ def with_retry(fn, max_retries: int = 3):
     for i in range(max_retries):
         try:
             return fn()
+        except FatalError:
+            raise  # never retry — bad input or definitive protocol error
         except Exception as e:
             if i == max_retries - 1:
                 raise
             delay = 2 ** (i + 1)
-            print(f"  Retry {i + 1}/{max_retries - 1}: {e} — waiting {delay}s")
+            print(f"  [attempt {i + 1}/{max_retries} failed] {e} — retrying in {delay}s")
             time.sleep(delay)
 
 # ── Peg-In helpers ─────────────────────────────────────────────────────────────
 
 def validate_pegin_target(btc_tx_hash: str, expected_fed_address: str) -> None:
-    # 404 = invalid hash (fatal); 5xx = transient (retried by with_retry via raised exception)
+    # FatalError on 404 — bad hash, not retried; RuntimeError on 5xx — transient, retried
     def fetch_tx():
         r = requests.get(f"{BTC_API}/tx/{btc_tx_hash}", timeout=10)
         if r.status_code == 404:
-            raise ValueError(f"Tx {btc_tx_hash} not found on {NETWORK}. Check the hash.")
+            raise FatalError(f"Tx {btc_tx_hash} not found on {NETWORK}. Check the hash.")
         if r.status_code != 200:
             raise RuntimeError(f"Blockstream HTTP {r.status_code} — will retry")
         return r
@@ -726,17 +765,18 @@ def monitor_pegin(btc_tx_hash: str, rsk_address: str) -> None:
     print(f"  Federation address: {fed_address}\n")
     validate_pegin_target(btc_tx_hash, fed_address)
 
+    # Defined outside the poll loop — closure over btc_tx_hash which never changes
+    def fetch_btc_tx():
+        r = requests.get(f"{BTC_API}/tx/{btc_tx_hash}", timeout=10)
+        if r.status_code != 200:
+            raise RuntimeError(f"Blockstream HTTP {r.status_code}")
+        return r.json()
+
     while True:
         try:
             bridge_btc_height = with_retry(
                 lambda: bridge.functions.getBtcBlockchainBestChainHeight().call()
             )
-            def fetch_btc_tx():
-                r = requests.get(f"{BTC_API}/tx/{btc_tx_hash}", timeout=10)
-                if r.status_code != 200:
-                    raise RuntimeError(f"Blockstream HTTP {r.status_code}")
-                return r.json()
-
             tx = with_retry(fetch_btc_tx)
 
             if not tx.get("status", {}).get("confirmed"):
@@ -893,17 +933,16 @@ if __name__ == "__main__":
     else:
         print("Mode must be 'pegin' or 'pegout'")
         sys.exit(1)
-
 ```
 
 Run it:
 
 ```bash
 # Monitor a peg-in
-python monitor.py pegin <btc-tx-hash> <rsk-address>
+python3 monitor.py pegin <btc-tx-hash> <rsk-address>
 
 # Monitor a peg-out
-python monitor.py pegout <rsk-tx-hash>
+python3 monitor.py pegout <rsk-tx-hash>
 ```
 
 ---
@@ -948,79 +987,46 @@ curl -H "Content-Type: application/json" \
 
 ---
 
-## Verifying Everything Works
+## Testing Your Setup
 
-Before doing anything with real transactions, run the test suite to confirm your setup is solid. A single bash script checks dependencies, installs packages via `$PYTHON -m pip`, runs both the JS and Python test suites, smoke-tests the live monitor output, and verifies your alert endpoints:
+Before monitoring real funds, verify the full stack works with a single command:
 
 ```bash
 chmod +x test.sh   # first time only
 ./test.sh
 ```
 
-The script auto-detects the best working Python 3.10–3.13 on your system and always installs packages into **that exact interpreter** — avoiding the pip-mismatch issue that causes silent import failures on macOS when `pip3` and `python3` target different versions.
+This runs end-to-end against the live Bridge contract and real testnet transactions — no mocks, no stubs. It covers:
 
-Or run the language-specific suites directly:
+- Bridge contract calls (`getBtcBlockchainBestChainHeight`, `getFederationAddress`, etc.)
+- Blockstream API (confirmed tx lookup, 404 handling)
+- State persistence (save → load → merge)
+- Retry logic (success on 3rd attempt, exhaust and throw)
+- Confirmation math (clamping, correct arithmetic)
+- Live monitor output (peg-in and peg-out dashboards)
+- Alert endpoints (Telegram and Discord, if configured)
+
+Both JS and Python suites run in parallel. If Python 3.14 is installed and broken, the script auto-detects and falls back to 3.12 or 3.13.
 
 ```bash
-node test.js     # JS: 27 tests covering utilities, state, retry, Bridge calls, Blockstream API, alerts
-python3 test.py  # Python: equivalent coverage
+./test.sh --js-only    # JavaScript tests + smoke only
+./test.sh --py-only    # Python tests + smoke only
+./test.sh --no-smoke   # Skip live monitor output tests
+./test.sh --alerts     # Test alert endpoints only
 ```
 
-The test suites use two real confirmed testnet transactions — a peg-in and a peg-out — as fixtures. They hit the live Bridge contract and Blockstream API to verify everything is wired up correctly. All tests should pass before you try monitoring a live transaction.
+Or run the suites directly:
 
-Options if you don't want the full suite:
 ```bash
-./test.sh --js-only    # JavaScript tests only
-./test.sh --py-only    # Python tests only
-./test.sh --smoke      # Live monitor smoke tests (peg-in + peg-out output)
-./test.sh --alerts     # Alert endpoint tests only (Telegram + Discord)
-./test.sh --no-smoke   # Skip live monitor tests
-./test.sh --no-alerts  # Skip alert tests
+node test.js       # JS: utilities, state, retry, Bridge, Blockstream, alerts
+python3 test.py    # Python: equivalent coverage
 ```
-
-### Ready-to-use test transactions
-
-You can run the monitor against these confirmed testnet transactions right now, without sending any BTC or rBTC yourself:
-
-| Field | Value |
-|-------|-------|
-| BTC peg-in tx | `a74918ced40b93d8cf9843cc952db41d233fda569ae60cee240292153a529526` |
-| BTC testnet block | 4,918,812 |
-| RSK peg-out tx | `0x7695bb4c1dbaf9840d3cafb3fa539162f5f116e7d74cf25bad604a9dd4669d19` |
-| RSK testnet block | 7,562,606 |
-| Dummy RSK address | `0x742d35Cc6634C0553241234561234561234567890` |
-
-**JavaScript:**
-```bash
-# Peg-in (BTC → rBTC) — 0.005 tBTC, confirmed at BTC testnet block 4,918,812
-node monitor.js pegin \
-  a74918ced40b93d8cf9843cc952db41d233fda569ae60cee240292153a529526 \
-  0x742d35Cc6634C0553241234561234561234567890
-
-# Peg-out (rBTC → BTC) — 0.005 tRBTC, confirmed at RSK testnet block 7,562,606
-node monitor.js pegout \
-  0x7695bb4c1dbaf9840d3cafb3fa539162f5f116e7d74cf25bad604a9dd4669d19
-```
-
-**Python:**
-```bash
-# Peg-in (BTC → rBTC)
-python3 monitor.py pegin \
-  a74918ced40b93d8cf9843cc952db41d233fda569ae60cee240292153a529526 \
-  0x742d35Cc6634C0553241234561234561234567890
-
-# Peg-out (rBTC → BTC)
-python3 monitor.py pegout \
-  0x7695bb4c1dbaf9840d3cafb3fa539162f5f116e7d74cf25bad604a9dd4669d19
-```
-
-Both show `Status: ✓ COMPLETE` since they were confirmed long ago — but they verify that the Bridge contract calls, Blockstream API, confirmation math, and display all work correctly. To see a live countdown, send your own testnet transaction in the walkthrough below.
 
 ---
 
 ## Testnet Walkthrough
 
-Here's an end-to-end walkthrough using real testnet transactions. Reading the output critically — understanding what each field is telling you — is as important as getting the monitor running.
+Here's an end-to-end walkthrough using real testnet transactions. Understanding what each field in the output is telling you is as important as getting the monitor running.
 
 ### Step 1: Get your RPC key
 
@@ -1060,14 +1066,23 @@ The monitor validates this automatically at peg-in startup. At the time of writi
 
 Get tBTC from [bitcoinfaucet.uo1.net](https://bitcoinfaucet.uo1.net) and send at least 0.005 tBTC to the federation address from a legacy (non-SegWit) testnet wallet.
 
-Here's a real confirmed testnet peg-in you can run the monitor against right now:
+The transactions below are real confirmed testnet transactions you can run the monitor against right now — no wallet required to test:
 
 ```
-BTC tx: a74918ced40b93d8cf9843cc952db41d233fda569ae60cee240292153a529526
+BTC tx:  a74918ced40b93d8cf9843cc952db41d233fda569ae60cee240292153a529526
+RSK addr (use your own to receive real rBTC): 0x742d35Cc6634C0553241234561234561234567890
 ```
 
 ```bash
-node monitor.js pegin a74918ced40b93d8cf9843cc952db41d233fda569ae60cee240292153a529526 <your-rsk-address>
+node monitor.js pegin \
+  a74918ced40b93d8cf9843cc952db41d233fda569ae60cee240292153a529526 \
+  0x742d35Cc6634C0553241234561234561234567890
+```
+
+```bash
+python3 monitor.py pegin \
+  a74918ced40b93d8cf9843cc952db41d233fda569ae60cee240292153a529526 \
+  0x742d35Cc6634C0553241234561234561234567890
 ```
 
 Output:
@@ -1091,16 +1106,16 @@ Output:
   Status            : ✓ COMPLETE — rBTC credited
   ETA               : Done
 
-  Updated         : 9:12:34 PM
+  Updated           : 21:12:34
   Press Ctrl+C to stop.
 ```
 
 Reading this output:
-- **BTC Tx Block: 4918812** — this is where your BTC transaction was included in the Bitcoin testnet chain
-- **Bridge BTC Height: 4925875** — this is the Bridge's own SPV view of the Bitcoin testnet tip, fetched directly from the contract. The Bridge has synced 7,063 Bitcoin blocks past your transaction's block.
-- **Confirmations: 7064 / 10** — computed as `4925875 - 4918812 + 1`. This peg-in completed long ago; you'd only see a live confirmation count climbing on a fresh transaction.
+- **BTC Tx Block: 4918812** — this is the Bitcoin testnet block that included your BTC transaction
+- **Bridge BTC Height: 4925875** — the Bridge's own SPV-verified view of the Bitcoin testnet tip, read directly from the contract. The Bridge has processed 7,063 Bitcoin blocks past your transaction's block.
+- **Confirmations: 7064 / 10** — computed as `4925875 − 4918812 + 1`. This peg-in completed long ago; on a fresh transaction you'd see this count climb from 0 to 10 over ~100 minutes on testnet.
 
-On testnet, 10 confirmations are required instead of 100 — so the wait from a fresh transaction is about 100 minutes.
+> **Note on the timestamp:** The JS version uses `new Date().toLocaleTimeString()`, which produces a locale-dependent format (12-hour on US locale, 24-hour on others). Python always uses `%H:%M:%S` (24-hour). Both are fine for a local monitor; just don't treat the format as canonical.
 
 ### Step 4: Track a peg-out (rBTC → BTC)
 
@@ -1108,14 +1123,16 @@ Send at least 0.004 tRBTC to the Bridge contract address on testnet. Use exactly
 - Gas limit: **100,000**
 - Gas price: **0.06 gwei**
 
-Here's a real confirmed testnet peg-out (0.005 rBTC sent to the Bridge at block 7,562,606):
-
 ```
 RSK tx: 0x7695bb4c1dbaf9840d3cafb3fa539162f5f116e7d74cf25bad604a9dd4669d19
 ```
 
 ```bash
 node monitor.js pegout 0x7695bb4c1dbaf9840d3cafb3fa539162f5f116e7d74cf25bad604a9dd4669d19
+```
+
+```bash
+python3 monitor.py pegout 0x7695bb4c1dbaf9840d3cafb3fa539162f5f116e7d74cf25bad604a9dd4669d19
 ```
 
 Output:
@@ -1141,18 +1158,16 @@ Output:
 
 Reading this output:
 - **Tx Block: 7562606** — the RSK block that included your `send rBTC to Bridge` transaction
-- **Current Block: 7565503** — live RSK chain tip, fetched fresh from the RPC each poll
-- **Confirmations: 2897 / 10** — `7565503 - 7562606`. The 4,000 threshold applies on mainnet; testnet uses 10 for rapid iteration
-- **Queue Size: 0 pending pegout(s)** — `getQueuedPegoutsCount()` from the Bridge. Zero means your request has already been batched and dispatched
-- **Next Batch: 175 blocks** — `getNextPegoutCreationBlockNumber() - currentBlock`. This is when the Bridge will assemble the next batch of queued peg-outs. At ~30s per RSK block, 175 blocks is about 87 minutes
+- **Current Block: 7565503** — live RSK chain tip, fetched fresh on each poll
+- **Confirmations: 2897 / 10** — `7565503 − 7562606`. On mainnet this threshold is 4,000; testnet uses 10 for rapid iteration
+- **Queue Size: 0** — `getQueuedPegoutsCount()` returns zero, meaning this request has already been batched and dispatched
+- **Next Batch: 175 blocks** — `getNextPegoutCreationBlockNumber() − currentBlock`. At ~30s per RSK block, this is about 87 minutes until the next batch window assembles
 
 ---
 
 ## Hardening for Production
 
-The scripts above are solid for development and personal use. For production handling real funds:
-
-**Switch to WebSocket for RSK.** Replace HTTP polling with `WebSocketProvider` and subscribe to new blocks. Latency drops from 60 seconds to under 2 seconds. This matters if you're building something user-facing — nobody wants a confirmation counter that only updates once a minute:
+**Switch to WebSocket for RSK.** Replace HTTP polling with `WebSocketProvider` and subscribe to new blocks. Latency drops from 60 seconds to under 2 seconds — important for user-facing applications:
 
 ```javascript
 const wsProvider = new ethers.WebSocketProvider(
@@ -1166,9 +1181,9 @@ wsProvider.on("block", async (blockNumber) => {
 
 **Track multiple transactions concurrently.** The current scripts handle one transaction at a time. Refactor the polling loop into a class and run N monitors with `Promise.all` (JS) or `asyncio.gather` (Python). The state file already supports multiple transactions — each is stored under its own key.
 
-**Federation address changes mid-wait.** The monitor validates the federation address at startup, but a long-running peg-in monitor could start before a federation rotation and continue happily watching a transaction that will never be credited. For production, re-validate the federation address on each poll or subscribe to Bridge events that signal a federation change.
+**Re-validate the federation address on each poll.** The peg-in monitor validates the federation address at startup, but a long-running monitor could start before a federation rotation and keep running against an outdated BTC transaction. For production, re-query `getFederationAddress()` on each iteration and alert if it changes.
 
-**Watch RPC rate limits.** The free RPC tier allows 25,000 requests/day. At a 60-second poll interval the monitor uses ~1,440 requests/day — well within limits. If you tighten the interval, the retry wrapper already handles transient errors with exponential backoff (2s, 4s, 8s). On mainnet, a peg-in runs for ~17 hours, so you'll make roughly 1,000 polls per transaction — still fine on the free tier.
+**Watch RPC rate limits.** The free RPC tier allows 25,000 requests/day. At a 60-second poll interval the monitor uses ~1,440 requests/day — well within limits even with parallel monitors. If you tighten the interval, the retry wrapper already handles transient errors with exponential backoff (2s, 4s, 8s).
 
 ---
 

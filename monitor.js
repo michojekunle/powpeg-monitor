@@ -6,7 +6,16 @@ const path = require("path");
 require("dotenv").config();
 
 // Node 18+ has fetch built-in; fall back to node-fetch for older runtimes
-const fetch = globalThis.fetch ?? require("node-fetch").default ?? require("node-fetch");
+const _nf   = typeof globalThis.fetch === "undefined" ? require("node-fetch") : null;
+const fetch = globalThis.fetch ?? _nf.default ?? _nf;
+
+// Errors that should never be retried (bad tx hash, wrong network, etc.)
+class FatalError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "FatalError";
+  }
+}
 
 // ── Config ─────────────────────────────────────────────────────────────────────
 
@@ -118,9 +127,9 @@ async function withRetry(fn, maxRetries = 3) {
     try {
       return await fn();
     } catch (err) {
-      if (i === maxRetries - 1) throw err;
+      if (err instanceof FatalError || i === maxRetries - 1) throw err;
       const delay = 2000 * Math.pow(2, i);
-      console.warn(`  Retry ${i + 1}/${maxRetries - 1}: ${err.message} — waiting ${delay / 1000}s`);
+      console.warn(`  [attempt ${i + 1}/${maxRetries} failed] ${err.message} — retrying in ${delay / 1000}s`);
       await new Promise((r) => setTimeout(r, delay));
     }
   }
@@ -133,7 +142,7 @@ async function validatePeginTarget(btcTxHash, expectedFedAddress) {
   const res = await withRetry(async () => {
     const r = await fetch(`${BTC_API}/tx/${btcTxHash}`);
     if (r.status === 404) {
-      throw Object.assign(new Error(`Tx ${btcTxHash} not found on ${NETWORK}. Check the hash.`), { fatal: true });
+      throw new FatalError(`Tx ${btcTxHash} not found on ${NETWORK}. Check the hash.`);
     }
     if (!r.ok) throw new Error(`Blockstream HTTP ${r.status}`);
     return r;
@@ -350,6 +359,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  FatalError,
   withRetry,
   loadState,
   saveState,

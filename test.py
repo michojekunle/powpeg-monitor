@@ -45,6 +45,7 @@ _HERE = Path(__file__).parent
 sys.path.insert(0, str(_HERE))
 
 from monitor import (
+    FatalError,
     load_state, save_state,
     seconds_to_human,
     validate_pegin_target,
@@ -68,7 +69,7 @@ class TestUtilities(unittest.TestCase):
         self.assertEqual(seconds_to_human(45), "45s")
 
     def test_seconds_to_human_minutes(self):
-        self.assertEqual(seconds_to_human(90), "1m")
+        self.assertEqual(seconds_to_human(90), "2m")
 
     def test_seconds_to_human_hours(self):
         self.assertEqual(seconds_to_human(3900), "1h 5m")
@@ -288,9 +289,9 @@ class TestValidatePeginTarget(unittest.TestCase):
             self.assertIn("does not send to federation address", str(ctx.exception))
         self._run_or_skip(run)
 
-    def test_raises_on_invalid_tx_hash(self):
+    def test_raises_fatal_error_on_invalid_tx_hash(self):
         def run():
-            with self.assertRaises((ValueError, RuntimeError)) as ctx:
+            with self.assertRaises(FatalError) as ctx:
                 validate_pegin_target("0" * 64, TESTNET_FED_ADDR)
             self.assertIn("not found", str(ctx.exception))
         self._run_or_skip(run)

@@ -16,6 +16,10 @@ from web3 import Web3
 
 load_dotenv()
 
+# Errors that should never be retried (bad tx hash, wrong network, etc.)
+class FatalError(Exception):
+    pass
+
 # ── Config ─────────────────────────────────────────────────────────────────────
 
 RSK_RPC_URL    = os.getenv("RSK_RPC_URL")
@@ -71,9 +75,9 @@ def seconds_to_human(seconds: int) -> str:
     if seconds < 60:
         return f"{seconds}s"
     if seconds < 3600:
-        return f"{seconds // 60}m"
+        return f"{round(seconds / 60)}m"
     h = seconds // 3600
-    m = (seconds % 3600) // 60
+    m = round((seconds % 3600) / 60)
     return f"{h}h {m}m"
 
 def print_status(label: str, data: dict) -> None:
@@ -123,21 +127,23 @@ def with_retry(fn, max_retries: int = 3):
     for i in range(max_retries):
         try:
             return fn()
+        except FatalError:
+            raise  # never retry — bad input or definitive protocol error
         except Exception as e:
             if i == max_retries - 1:
                 raise
             delay = 2 ** (i + 1)
-            print(f"  Retry {i + 1}/{max_retries - 1}: {e} — waiting {delay}s")
+            print(f"  [attempt {i + 1}/{max_retries} failed] {e} — retrying in {delay}s")
             time.sleep(delay)
 
 # ── Peg-In helpers ─────────────────────────────────────────────────────────────
 
 def validate_pegin_target(btc_tx_hash: str, expected_fed_address: str) -> None:
-    # 404 = invalid hash (fatal); 5xx = transient (retried by with_retry via raised exception)
+    # FatalError on 404 — bad hash, not retried; RuntimeError on 5xx — transient, retried
     def fetch_tx():
         r = requests.get(f"{BTC_API}/tx/{btc_tx_hash}", timeout=10)
         if r.status_code == 404:
-            raise ValueError(f"Tx {btc_tx_hash} not found on {NETWORK}. Check the hash.")
+            raise FatalError(f"Tx {btc_tx_hash} not found on {NETWORK}. Check the hash.")
         if r.status_code != 200:
             raise RuntimeError(f"Blockstream HTTP {r.status_code} — will retry")
         return r
@@ -175,17 +181,17 @@ def monitor_pegin(btc_tx_hash: str, rsk_address: str) -> None:
     print(f"  Federation address: {fed_address}\n")
     validate_pegin_target(btc_tx_hash, fed_address)
 
+    def fetch_btc_tx():
+        r = requests.get(f"{BTC_API}/tx/{btc_tx_hash}", timeout=10)
+        if r.status_code != 200:
+            raise RuntimeError(f"Blockstream HTTP {r.status_code}")
+        return r.json()
+
     while True:
         try:
             bridge_btc_height = with_retry(
                 lambda: bridge.functions.getBtcBlockchainBestChainHeight().call()
             )
-            def fetch_btc_tx():
-                r = requests.get(f"{BTC_API}/tx/{btc_tx_hash}", timeout=10)
-                if r.status_code != 200:
-                    raise RuntimeError(f"Blockstream HTTP {r.status_code}")
-                return r.json()
-
             tx = with_retry(fetch_btc_tx)
 
             if not tx.get("status", {}).get("confirmed"):

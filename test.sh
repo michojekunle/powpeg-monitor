@@ -21,7 +21,7 @@ pass()  { echo -e "  ${GREEN}✓${RESET}  $*"; }
 fail()  { echo -e "  ${RED}✗${RESET}  $*"; FAILURES=$((FAILURES + 1)); }
 warn()  { echo -e "  ${YELLOW}⚠${RESET}  $*"; }
 info()  { echo -e "  ${CYAN}→${RESET}  $*"; }
-section() { echo -e "\n${BOLD}── $* $(printf '%.0s─' $(seq 1 $((48 - ${#1}))))${RESET}"; }
+section() { local label="$*"; echo -e "\n${BOLD}── ${label} $(printf '%.0s─' $(seq 1 $((48 - ${#label}))))${RESET}"; }
 
 FAILURES=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -57,8 +57,10 @@ RUN_JS=true; RUN_PY=true; RUN_SMOKE=true; RUN_ALERTS=true
 
 for arg in "$@"; do
   case "$arg" in
-    --js-only)   RUN_PY=false;    RUN_SMOKE=false; RUN_ALERTS=false ;;
-    --py-only)   RUN_JS=false;    RUN_SMOKE=false; RUN_ALERTS=false ;;
+    # --js-only: unit tests + smoke for JS only (Python smoke skipped via RUN_PY=false)
+    --js-only)   RUN_PY=false;                     RUN_ALERTS=false ;;
+    # --py-only: unit tests + smoke for Python only (JS smoke skipped explicitly)
+    --py-only)   RUN_JS=false;                     RUN_ALERTS=false ;;
     --smoke)     RUN_JS=false;    RUN_PY=false;    RUN_ALERTS=false ;;
     --alerts)    RUN_JS=false;    RUN_PY=false;    RUN_SMOKE=false  ;;
     --no-smoke)  RUN_SMOKE=false ;;
@@ -228,35 +230,37 @@ fi
 if [ "$RUN_SMOKE" = true ]; then
   section "Smoke tests (live monitor output)"
 
-  info "Testing JS peg-out monitor (30s timeout)..."
-  PEGOUT_OUT=$(run_timed 30 node monitor.js pegout "$PEGOUT_TX" 2>&1 || true)
-  if echo "$PEGOUT_OUT" | grep -q "PEG-OUT"; then
-    pass "JS peg-out monitor renders dashboard"
-    if echo "$PEGOUT_OUT" | grep -q "Confirmations"; then
-      pass "JS peg-out monitor shows confirmation count"
+  if [ "$RUN_JS" = true ]; then
+    info "Testing JS peg-out monitor (30s timeout)..."
+    PEGOUT_OUT=$(run_timed 30 node monitor.js pegout "$PEGOUT_TX" 2>&1 || true)
+    if echo "$PEGOUT_OUT" | grep -q "PEG-OUT"; then
+      pass "JS peg-out monitor renders dashboard"
+      if echo "$PEGOUT_OUT" | grep -q "Confirmations"; then
+        pass "JS peg-out monitor shows confirmation count"
+      else
+        fail "JS peg-out monitor missing confirmation count"
+      fi
     else
-      fail "JS peg-out monitor missing confirmation count"
+      fail "JS peg-out monitor did not render dashboard"
+      echo "$PEGOUT_OUT" | tail -10
     fi
-  else
-    fail "JS peg-out monitor did not render dashboard"
-    echo "$PEGOUT_OUT" | tail -10
+
+    info "Testing JS peg-in monitor (30s timeout)..."
+    PEGIN_OUT=$(run_timed 30 node monitor.js pegin "$PEGIN_TX" "$DUMMY_RSK_ADDR" 2>&1 || true)
+    if echo "$PEGIN_OUT" | grep -q "PEG-IN"; then
+      pass "JS peg-in monitor renders dashboard"
+      if echo "$PEGIN_OUT" | grep -q "Federation address:"; then
+        pass "JS peg-in monitor validates federation address"
+      else
+        fail "JS peg-in monitor missing federation address validation"
+      fi
+    else
+      fail "JS peg-in monitor did not render dashboard"
+      echo "$PEGIN_OUT" | tail -10
+    fi
   fi
 
-  info "Testing JS peg-in monitor (30s timeout)..."
-  PEGIN_OUT=$(run_timed 30 node monitor.js pegin "$PEGIN_TX" "$DUMMY_RSK_ADDR" 2>&1 || true)
-  if echo "$PEGIN_OUT" | grep -q "PEG-IN"; then
-    pass "JS peg-in monitor renders dashboard"
-    if echo "$PEGIN_OUT" | grep -q "Federation address:"; then
-      pass "JS peg-in monitor validates federation address"
-    else
-      fail "JS peg-in monitor missing federation address validation"
-    fi
-  else
-    fail "JS peg-in monitor did not render dashboard"
-    echo "$PEGIN_OUT" | tail -10
-  fi
-
-  if [ "$RUN_PY" != false ] && [ -n "$PYTHON" ]; then
+  if [ "$RUN_PY" = true ] && [ -n "$PYTHON" ]; then
     info "Testing Python peg-out monitor (30s timeout)..."
     PY_PEGOUT_OUT=$(run_timed 30 "$PYTHON" monitor.py pegout "$PEGOUT_TX" 2>&1 || true)
     if echo "$PY_PEGOUT_OUT" | grep -q "PEG-OUT"; then

@@ -56,6 +56,7 @@ const {
   saveState,
   secondsToHuman,
   validatePeginTarget,
+  FatalError,
   provider,
   bridge,
   NETWORK,
@@ -353,15 +354,13 @@ async function runValidationTests() {
     }
   });
 
-  await test("throws fatal error on invalid tx hash", async () => {
+  await test("throws FatalError (not retried) on invalid tx hash", async () => {
     try {
       await validatePeginTarget("0000000000000000000000000000000000000000000000000000000000000000", TESTNET_FED_ADDR);
       assert.fail("Expected an error");
     } catch (err) {
-      assert.ok(
-        err.message.includes("not found"),
-        `Unexpected error: ${err.message}`
-      );
+      assert.ok(err instanceof FatalError, `Expected FatalError, got ${err.constructor.name}`);
+      assert.ok(err.message.includes("not found"), `Unexpected message: ${err.message}`);
     }
   });
 }
@@ -401,7 +400,12 @@ async function runAlertTests() {
     const token  = process.env.TELEGRAM_BOT_TOKEN;
     const chatId = process.env.TELEGRAM_CHAT_ID;
     assert.ok(!token || !chatId || token === "your_bot_token");
-    process.env.TELEGRAM_BOT_TOKEN = original;
+    // Restore — must delete rather than assign undefined (which sets the string "undefined")
+    if (original !== undefined) {
+      process.env.TELEGRAM_BOT_TOKEN = original;
+    } else {
+      delete process.env.TELEGRAM_BOT_TOKEN;
+    }
   });
 
   await test("Discord: skips gracefully when URL not set", async () => {

@@ -102,7 +102,7 @@ These confirmed testnet transactions let you verify the monitor immediately — 
 | BTC testnet block | 4,918,812 |
 | RSK peg-out tx | `0x7695bb4c1dbaf9840d3cafb3fa539162f5f116e7d74cf25bad604a9dd4669d19` |
 | RSK testnet block | 7,562,606 |
-| Dummy RSK address | `0x742d35Cc6634C0553241234561234561234567890` |
+| RSK address (placeholder — use your own to receive rBTC) | `0x742d35Cc6634C0553241234561234561234567890` |
 
 **JavaScript:**
 ```bash
@@ -187,7 +187,7 @@ Options:
 
 Or run the language-specific suites directly:
 ```bash
-node test.js       # JS: 27 tests — utilities, state, retry, Bridge, Blockstream, alerts
+node test.js       # JS: utilities, state, retry, Bridge, Blockstream, alerts
 python3 test.py    # Python: equivalent coverage
 ```
 
