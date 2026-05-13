@@ -560,6 +560,14 @@ const RSK_HASH_RE = /^0x[0-9a-fA-F]{64}$/i;
 if (require.main === module) {
   const [, , mode, txHash, rskAddress] = process.argv;
 
+  // Catches errors thrown before the polling loop starts (e.g. validatePeginTarget
+  // throwing FatalError during the initial federation address check). Without this,
+  // the rejection is unhandled and Node may exit with code 0 on older versions.
+  const fatalHandler = (err) => {
+    console.error(`\n  Fatal: ${err.message}\n`);
+    process.exit(1);
+  };
+
   if (mode === "pegin") {
     if (!txHash || !rskAddress) {
       console.error("Usage: node monitor.js pegin <btcTxHash> <rskAddress>");
@@ -570,7 +578,7 @@ if (require.main === module) {
       console.error("Error: BTC tx hash must be exactly 64 hex characters.");
       process.exit(1);
     }
-    monitorPegin(txHash, rskAddress);
+    monitorPegin(txHash, rskAddress).catch(fatalHandler);
   } else if (mode === "pegout") {
     if (!txHash) {
       console.error("Usage: node monitor.js pegout <rskTxHash>");
@@ -580,7 +588,7 @@ if (require.main === module) {
       console.error("Error: RSK tx hash must be 0x followed by 64 hex characters.");
       process.exit(1);
     }
-    monitorPegout(txHash);
+    monitorPegout(txHash).catch(fatalHandler);
   } else {
     console.error("Usage: node monitor.js [pegin|pegout] <txHash> [rskAddress]");
     process.exit(1);
