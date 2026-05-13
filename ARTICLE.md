@@ -160,13 +160,15 @@ Save this as `bridge-abi.json`:
 
 ## Building the Monitor: JavaScript
 
-The monitor has five moving parts worth understanding before you read the code:
+The monitor has seven moving parts worth understanding before you read the code:
 
-**`FatalError` vs retryable errors.** Both the RSK RPC and the Blockstream API can return transient 5xx errors that warrant a retry. But a 404 from Blockstream means your BTC tx hash is definitively wrong — retrying won't help. The monitor uses a `FatalError` subclass to make this distinction explicit: `withRetry` passes `FatalError` through immediately without retrying, while any other error triggers up to 3 attempts with 2s, 4s, 8s waits. This pattern is safer than tagging properties onto Error objects because the type check is enforced by the language, not by convention.
+**`FatalError` vs retryable errors.** Both the RSK RPC and the Blockstream API can return transient 5xx errors that warrant a retry. But a 404 from Blockstream means your BTC tx hash is definitively wrong — retrying won't help. The monitor uses a `FatalError` subclass to make this distinction explicit: `withRetry` passes `FatalError` through immediately without retrying, while any other error triggers up to 3 attempts with 2s, 4s, 8s waits. Critically, `FatalError` thrown inside the poll loop itself is re-raised (not swallowed) so it stops the monitor immediately with a clear message instead of looping forever.
 
-**State persistence.** If the process crashes or you restart it, the alert flags load from `monitor-state.json`. Without this, the monitor would re-fire "peg-in complete" alerts every time it restarts. The file lives in the same directory as the script (`__dirname`), not the current working directory, so it works regardless of where you invoke the script from.
+**Atomic state persistence.** Alert flags are written to `monitor-state.json` so the monitor doesn't re-fire "complete" alerts after a restart. Writes are done atomically — the file is written to a `.tmp` sibling first, then renamed over the target. A kill signal mid-write leaves the `.tmp` file, not a truncated state file. Both keys (`_confirms` and `_complete`) are written in the same call, eliminating the window where a crash between two separate writes could leave `_complete` unset.
 
-**Federation address validation.** The peg-in monitor calls `getFederationAddress()` and verifies that your BTC transaction actually outputs to that address before entering the polling loop. If the PowPeg composition changed since you sent your BTC — which happens periodically — the script throws immediately with a clear error. This catches a common mistake: sending BTC to an outdated federation address and then wondering why rBTC never arrives.
+**Federation address validation.** The peg-in monitor calls `getFederationAddress()` and verifies that your BTC transaction actually outputs to that address before entering the polling loop. If the PowPeg composition changed since you sent your BTC — which happens periodically — the script throws immediately with a clear error.
+
+**Input validation.** BTC tx hashes must be exactly 64 hex characters; RSK tx hashes must match `0x[0-9a-fA-F]{64}`. Both are checked before the monitor starts. The `NETWORK` environment variable is validated against `["mainnet", "testnet"]` — a typo like `"Mainnet"` exits immediately rather than silently using the wrong thresholds and API endpoints.
 
 **Confirmation math.** For peg-in: `Math.max(0, bridgeBtcHeight - txBlockHeight + 1)`. The `+1` follows the standard confirmations convention. The `Math.max(0, ...)` clamp handles the case where the Bridge SPV view lags briefly behind the BTC network — without it you'd display a negative confirmation count right after the transaction confirms.
 
@@ -219,7 +221,18 @@ if (!RSK_RPC_URL) {
   process.exit(1);
 }
 
-const BRIDGE_ABI = JSON.parse(fs.readFileSync(path.join(__dirname, "bridge-abi.json"), "utf8"));
+if (!["mainnet", "testnet"].includes(NETWORK)) {
+  console.error(`Error: NETWORK="${NETWORK}" is invalid — must be "mainnet" or "testnet" in .env`);
+  process.exit(1);
+}
+
+let BRIDGE_ABI;
+try {
+  BRIDGE_ABI = JSON.parse(fs.readFileSync(path.join(__dirname, "bridge-abi.json"), "utf8"));
+} catch {
+  console.error("Error: bridge-abi.json not found. Run: git checkout bridge-abi.json");
+  process.exit(1);
+}
 const provider   = new ethers.JsonRpcProvider(RSK_RPC_URL);
 const bridge     = new ethers.Contract(BRIDGE_ADDRESS, BRIDGE_ABI, provider);
 
@@ -237,7 +250,11 @@ function loadState() {
 }
 
 function saveState(state) {
-  fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+  // Write-then-rename: atomic on POSIX and NTFS. A kill signal mid-write
+  // leaves the .tmp file, not a truncated state file.
+  const tmp = STATE_FILE + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
+  fs.renameSync(tmp, STATE_FILE);
 }
 
 // ── Utilities ──────────────────────────────────────────────────────────────────
@@ -329,7 +346,10 @@ async function validatePeginTarget(btcTxHash, expectedFedAddress) {
   });
 
   const tx = await res.json();
-  if (!tx?.vout) {
+  // Check length, not just truthiness — an empty vout array is falsy-equivalent
+  // but would produce a misleading "does not target federation" error instead of
+  // "could not fetch outputs".
+  if (!tx?.vout?.length) {
     throw new Error(`Could not fetch outputs for tx ${btcTxHash}.`);
   }
   const targeted = tx.vout.some((v) => v.scriptpubkey_address === expectedFedAddress);
@@ -401,16 +421,23 @@ async function monitorPegin(btcTxHash, rskAddress) {
         "ETA"              : remaining > 0 ? secondsToHuman(remaining * BTC_BLOCK_TIME) : "Done",
       });
 
-      saveState({ ...loadState(), [`${btcTxHash}_confirms`]: btcConfirmations });
+      // Single merged write — prevents a crash between two separate writes from
+      // leaving _complete unset and causing a duplicate alert on the next restart.
+      const updates = { [`${btcTxHash}_confirms`]: btcConfirmations };
+      if (complete && !alertedComplete) updates[`${btcTxHash}_complete`] = true;
+      saveState({ ...loadState(), ...updates });
 
       if (complete && !alertedComplete) {
         alertedComplete = true;
-        saveState({ ...loadState(), [`${btcTxHash}_complete`]: true });
         await sendAlert(
           `✅ *PowPeg Peg-In Complete*\nBTC Tx: \`${btcTxHash}\`\nrBTC credited to: \`${rskAddress}\`\nNetwork: ${NETWORK}`
         );
       }
     } catch (err) {
+      if (err instanceof FatalError) {
+        console.error(`\n  Fatal: ${err.message}\n`);
+        process.exit(1);
+      }
       console.error(`  Poll error: ${err.message}`);
     }
   }
@@ -418,7 +445,9 @@ async function monitorPegin(btcTxHash, rskAddress) {
   await poll();
   const timer = setInterval(poll, POLL_INTERVAL);
 
-  process.on("SIGINT", () => {
+  // process.once (not .on) — prevents handler accumulation if this function
+  // is called multiple times in the same process (e.g. in tests).
+  process.once("SIGINT", () => {
     clearInterval(timer);
     console.log("\n  Monitor stopped.\n");
     process.exit(0);
@@ -483,11 +512,14 @@ async function monitorPegout(rskTxHash) {
         "ETA"           : remaining > 0 ? secondsToHuman(remaining * RSK_BLOCK_TIME) : "Done",
       });
 
-      saveState({ ...loadState(), [`${rskTxHash}_confirms`]: rskConfirms });
+      // Single merged write per cycle — prevents duplicate alerts on restart.
+      const updates = { [`${rskTxHash}_confirms`]: rskConfirms };
+      if (rskConfirms >= 10 && !alertedQueued) updates[`${rskTxHash}_queued`] = true;
+      if (complete && !alertedComplete)         updates[`${rskTxHash}_complete`] = true;
+      saveState({ ...loadState(), ...updates });
 
       if (rskConfirms >= 10 && !alertedQueued) {
         alertedQueued = true;
-        saveState({ ...loadState(), [`${rskTxHash}_queued`]: true });
         await sendAlert(
           `🔄 *PowPeg Peg-Out Queued*\nRSK Tx: \`${rskTxHash}\`\n${rskConfirms} RSK confirmations so far.\nNetwork: ${NETWORK}`
         );
@@ -495,12 +527,15 @@ async function monitorPegout(rskTxHash) {
 
       if (complete && !alertedComplete) {
         alertedComplete = true;
-        saveState({ ...loadState(), [`${rskTxHash}_complete`]: true });
         await sendAlert(
           `✅ *PowPeg Peg-Out Complete*\nRSK Tx: \`${rskTxHash}\`\n${PEGOUT_REQUIRED} RSK confirmations reached. BTC broadcast.\nNetwork: ${NETWORK}`
         );
       }
     } catch (err) {
+      if (err instanceof FatalError) {
+        console.error(`\n  Fatal: ${err.message}\n`);
+        process.exit(1);
+      }
       console.error(`  Poll error: ${err.message}`);
     }
   }
@@ -508,7 +543,7 @@ async function monitorPegout(rskTxHash) {
   await poll();
   const timer = setInterval(poll, POLL_INTERVAL);
 
-  process.on("SIGINT", () => {
+  process.once("SIGINT", () => {
     clearInterval(timer);
     console.log("\n  Monitor stopped.\n");
     process.exit(0);
@@ -519,6 +554,9 @@ async function monitorPegout(rskTxHash) {
 // Guarded with require.main === module so test suites can import internals
 // without triggering the CLI entry point.
 
+const BTC_HASH_RE = /^[0-9a-fA-F]{64}$/;
+const RSK_HASH_RE = /^0x[0-9a-fA-F]{64}$/i;
+
 if (require.main === module) {
   const [, , mode, txHash, rskAddress] = process.argv;
 
@@ -527,10 +565,19 @@ if (require.main === module) {
       console.error("Usage: node monitor.js pegin <btcTxHash> <rskAddress>");
       process.exit(1);
     }
+    const cleanHash = txHash.replace(/^0x/i, "");
+    if (!BTC_HASH_RE.test(cleanHash)) {
+      console.error("Error: BTC tx hash must be exactly 64 hex characters.");
+      process.exit(1);
+    }
     monitorPegin(txHash, rskAddress);
   } else if (mode === "pegout") {
     if (!txHash) {
       console.error("Usage: node monitor.js pegout <rskTxHash>");
+      process.exit(1);
+    }
+    if (!RSK_HASH_RE.test(txHash)) {
+      console.error("Error: RSK tx hash must be 0x followed by 64 hex characters.");
       process.exit(1);
     }
     monitorPegout(txHash);
@@ -571,11 +618,13 @@ node monitor.js pegout <your-rsk-tx-hash>
 
 ## Building the Monitor: Python
 
-The Python version is functionally identical — same logic, same confirmation math, same retry behavior, same output format. Three structural differences worth noting:
+The Python version is functionally identical — same logic, same confirmation math, same retry behavior, same output format. Four structural differences worth noting:
 
 **Synchronous I/O.** Python uses a blocking `while True` / `time.sleep(60)` loop instead of `setInterval`. Simpler to reason about; works well for a single-transaction monitor.
 
-**`FatalError` exception class.** Same pattern as JS — `with_retry` explicitly catches `FatalError` and re-raises it without retrying. Any other exception triggers the exponential backoff loop.
+**`FatalError` exception class.** Same pattern as JS — `with_retry` explicitly catches `FatalError` and re-raises it without retrying. The poll loop also explicitly catches `FatalError` and calls `sys.exit(1)` — without this, it would be swallowed by the outer `except Exception` and the monitor would loop forever on a definitively bad input.
+
+**Concurrent alerts.** Python's `requests` library is synchronous, so calling `send_telegram` then `send_discord` sequentially could block for up to 20 seconds if both are configured (10s timeout each). Instead, both are dispatched concurrently via `ThreadPoolExecutor(max_workers=2)` — matching the JS `Promise.all` behaviour.
 
 **Checksum addresses.** `web3.py` requires `Web3.to_checksum_address()` for contract calls. The Bridge address is all-lowercase hex in the `.env` file — without this step, web3.py raises a `ValueError`. ethers.js handles this transparently.
 
@@ -589,8 +638,10 @@ Tracks peg-in (BTC → rBTC) and peg-out (rBTC → BTC) confirmation progress.
 
 import json
 import os
+import re
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
@@ -610,8 +661,16 @@ RSK_RPC_URL    = os.getenv("RSK_RPC_URL")
 BRIDGE_ADDRESS = os.getenv("BRIDGE_ADDRESS", "0x0000000000000000000000000000000001000006")
 NETWORK        = os.getenv("NETWORK", "testnet")
 POLL_INTERVAL  = 60
-_HERE      = Path(__file__).parent
-STATE_FILE = str(_HERE / "monitor-state.json")
+_HERE          = Path(__file__).parent
+STATE_FILE     = str(_HERE / "monitor-state.json")
+
+if not RSK_RPC_URL:
+    print("RSK_RPC_URL is not set in .env")
+    sys.exit(1)
+
+if NETWORK not in ("mainnet", "testnet"):
+    print(f'Error: NETWORK="{NETWORK}" is invalid — must be "mainnet" or "testnet" in .env')
+    sys.exit(1)
 
 PEGIN_REQUIRED  = 100 if NETWORK == "mainnet" else 10
 PEGOUT_REQUIRED = 4000 if NETWORK == "mainnet" else 10
@@ -624,14 +683,14 @@ BTC_API = (
     else "https://blockstream.info/testnet/api"
 )
 
-if not RSK_RPC_URL:
-    print("RSK_RPC_URL is not set in .env")
-    sys.exit(1)
-
 w3 = Web3(Web3.HTTPProvider(RSK_RPC_URL))
 
-with open(_HERE / "bridge-abi.json") as f:
-    BRIDGE_ABI = json.load(f)
+try:
+    with open(_HERE / "bridge-abi.json") as f:
+        BRIDGE_ABI = json.load(f)
+except FileNotFoundError:
+    print("Error: bridge-abi.json not found. Run: git checkout bridge-abi.json")
+    sys.exit(1)
 
 bridge = w3.eth.contract(
     address=Web3.to_checksum_address(BRIDGE_ADDRESS),
@@ -650,8 +709,12 @@ def load_state() -> dict:
     return {}
 
 def save_state(state: dict) -> None:
-    with open(STATE_FILE, "w") as f:
+    # Write-then-replace: atomic on POSIX. A kill signal mid-write leaves the
+    # .tmp file, not a truncated state file.
+    tmp = STATE_FILE + ".tmp"
+    with open(tmp, "w") as f:
         json.dump(state, f, indent=2)
+    os.replace(tmp, STATE_FILE)
 
 # ── Utilities ──────────────────────────────────────────────────────────────────
 
@@ -702,8 +765,11 @@ def send_discord(message: str) -> None:
 
 def send_alert(message: str) -> None:
     print(f"\n  [ALERT] {message}\n")
-    send_telegram(message)
-    send_discord(message)
+    # Fire both concurrently — each has a 10s timeout, so sequential dispatch
+    # would block the poll loop for up to 20s when both endpoints are configured.
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        executor.submit(send_telegram, message)
+        executor.submit(send_discord, message)
 
 # ── Retry wrapper ──────────────────────────────────────────────────────────────
 
@@ -806,14 +872,17 @@ def monitor_pegin(btc_tx_hash: str, rsk_address: str) -> None:
                     "ETA"              : seconds_to_human(remaining * BTC_BLOCK_TIME) if remaining > 0 else "Done",
                 })
 
+                # Single merged write — prevents crash-between-writes leaving
+                # _complete unset and re-firing the alert on restart.
+                updates = {f"{btc_tx_hash}_confirms": confirms}
+                if complete and not alerted_complete:
+                    updates[f"{btc_tx_hash}_complete"] = True
                 current = load_state()
-                current[f"{btc_tx_hash}_confirms"] = confirms
+                current.update(updates)
                 save_state(current)
 
                 if complete and not alerted_complete:
                     alerted_complete = True
-                    current[f"{btc_tx_hash}_complete"] = True
-                    save_state(current)
                     send_alert(
                         f"✅ *PowPeg Peg-In Complete*\n"
                         f"BTC Tx: `{btc_tx_hash}`\n"
@@ -821,6 +890,9 @@ def monitor_pegin(btc_tx_hash: str, rsk_address: str) -> None:
                         f"Network: {NETWORK}"
                     )
 
+        except FatalError as e:
+            print(f"\n  Fatal: {e}\n")
+            sys.exit(1)
         except Exception as e:
             print(f"  Poll error: {e}")
 
@@ -883,14 +955,18 @@ def monitor_pegout(rsk_tx_hash: str) -> None:
                     "ETA"           : seconds_to_human(remaining * RSK_BLOCK_TIME) if remaining > 0 else "Done",
                 })
 
+                # Single merged write per cycle — prevents duplicate alerts on restart.
+                updates = {f"{rsk_tx_hash}_confirms": confirms}
+                if confirms >= 10 and not alerted_queued:
+                    updates[f"{rsk_tx_hash}_queued"] = True
+                if complete and not alerted_complete:
+                    updates[f"{rsk_tx_hash}_complete"] = True
                 current = load_state()
-                current[f"{rsk_tx_hash}_confirms"] = confirms
+                current.update(updates)
                 save_state(current)
 
                 if confirms >= 10 and not alerted_queued:
                     alerted_queued = True
-                    current[f"{rsk_tx_hash}_queued"] = True
-                    save_state(current)
                     send_alert(
                         f"🔄 *PowPeg Peg-Out Queued*\n"
                         f"RSK Tx: `{rsk_tx_hash}`\n"
@@ -900,8 +976,6 @@ def monitor_pegout(rsk_tx_hash: str) -> None:
 
                 if complete and not alerted_complete:
                     alerted_complete = True
-                    current[f"{rsk_tx_hash}_complete"] = True
-                    save_state(current)
                     send_alert(
                         f"✅ *PowPeg Peg-Out Complete*\n"
                         f"RSK Tx: `{rsk_tx_hash}`\n"
@@ -909,12 +983,18 @@ def monitor_pegout(rsk_tx_hash: str) -> None:
                         f"Network: {NETWORK}"
                     )
 
+        except FatalError as e:
+            print(f"\n  Fatal: {e}\n")
+            sys.exit(1)
         except Exception as e:
             print(f"  Poll error: {e}")
 
         time.sleep(POLL_INTERVAL)
 
 # ── Entry point ────────────────────────────────────────────────────────────────
+
+BTC_HASH_RE = re.compile(r"^[0-9a-fA-F]{64}$")
+RSK_HASH_RE = re.compile(r"^0x[0-9a-fA-F]{64}$", re.IGNORECASE)
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
@@ -927,9 +1007,18 @@ if __name__ == "__main__":
         if len(sys.argv) < 4:
             print("Usage: python monitor.py pegin <btcTxHash> <rskAddress>")
             sys.exit(1)
-        monitor_pegin(sys.argv[2], sys.argv[3])
+        raw_hash  = sys.argv[2]
+        clean     = raw_hash[2:] if raw_hash.lower().startswith("0x") else raw_hash
+        if not BTC_HASH_RE.match(clean):
+            print("Error: BTC tx hash must be exactly 64 hex characters.")
+            sys.exit(1)
+        monitor_pegin(raw_hash, sys.argv[3])
     elif mode == "pegout":
-        monitor_pegout(sys.argv[2])
+        raw_hash = sys.argv[2]
+        if not RSK_HASH_RE.match(raw_hash):
+            print("Error: RSK tx hash must be 0x followed by 64 hex characters.")
+            sys.exit(1)
+        monitor_pegout(raw_hash)
     else:
         print("Mode must be 'pegin' or 'pegout'")
         sys.exit(1)

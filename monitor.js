@@ -40,7 +40,18 @@ if (!RSK_RPC_URL) {
   process.exit(1);
 }
 
-const BRIDGE_ABI = JSON.parse(fs.readFileSync(path.join(__dirname, "bridge-abi.json"), "utf8"));
+if (!["mainnet", "testnet"].includes(NETWORK)) {
+  console.error(`Error: NETWORK="${NETWORK}" is invalid — must be "mainnet" or "testnet" in .env`);
+  process.exit(1);
+}
+
+let BRIDGE_ABI;
+try {
+  BRIDGE_ABI = JSON.parse(fs.readFileSync(path.join(__dirname, "bridge-abi.json"), "utf8"));
+} catch {
+  console.error("Error: bridge-abi.json not found. Run: git checkout bridge-abi.json");
+  process.exit(1);
+}
 const provider   = new ethers.JsonRpcProvider(RSK_RPC_URL);
 const bridge     = new ethers.Contract(BRIDGE_ADDRESS, BRIDGE_ABI, provider);
 
@@ -58,7 +69,11 @@ function loadState() {
 }
 
 function saveState(state) {
-  fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+  // Write to a temp file then rename — atomic on POSIX and NTFS, prevents
+  // a kill signal mid-write from leaving a truncated/corrupt state file.
+  const tmp = STATE_FILE + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
+  fs.renameSync(tmp, STATE_FILE);
 }
 
 // ── Utilities ──────────────────────────────────────────────────────────────────
@@ -149,7 +164,7 @@ async function validatePeginTarget(btcTxHash, expectedFedAddress) {
   });
 
   const tx = await res.json();
-  if (!tx?.vout) {
+  if (!tx?.vout?.length) {
     throw new Error(`Could not fetch outputs for tx ${btcTxHash}.`);
   }
   const targeted = tx.vout.some((v) => v.scriptpubkey_address === expectedFedAddress);
@@ -221,16 +236,23 @@ async function monitorPegin(btcTxHash, rskAddress) {
         "ETA"              : remaining > 0 ? secondsToHuman(remaining * BTC_BLOCK_TIME) : "Done",
       });
 
-      saveState({ ...loadState(), [`${btcTxHash}_confirms`]: btcConfirmations });
+      // Single merged write — prevents a kill-between-writes leaving _complete unset
+      // and causing a duplicate alert on the next restart.
+      const updates = { [`${btcTxHash}_confirms`]: btcConfirmations };
+      if (complete && !alertedComplete) updates[`${btcTxHash}_complete`] = true;
+      saveState({ ...loadState(), ...updates });
 
       if (complete && !alertedComplete) {
         alertedComplete = true;
-        saveState({ ...loadState(), [`${btcTxHash}_complete`]: true });
         await sendAlert(
           `✅ *PowPeg Peg-In Complete*\nBTC Tx: \`${btcTxHash}\`\nrBTC credited to: \`${rskAddress}\`\nNetwork: ${NETWORK}`
         );
       }
     } catch (err) {
+      if (err instanceof FatalError) {
+        console.error(`\n  Fatal: ${err.message}\n`);
+        process.exit(1);
+      }
       console.error(`  Poll error: ${err.message}`);
     }
   }
@@ -238,7 +260,7 @@ async function monitorPegin(btcTxHash, rskAddress) {
   await poll();
   const timer = setInterval(poll, POLL_INTERVAL);
 
-  process.on("SIGINT", () => {
+  process.once("SIGINT", () => {
     clearInterval(timer);
     console.log("\n  Monitor stopped.\n");
     process.exit(0);
@@ -303,11 +325,14 @@ async function monitorPegout(rskTxHash) {
         "ETA"           : remaining > 0 ? secondsToHuman(remaining * RSK_BLOCK_TIME) : "Done",
       });
 
-      saveState({ ...loadState(), [`${rskTxHash}_confirms`]: rskConfirms });
+      // Single merged write per cycle — prevents duplicate alerts on restart.
+      const updates = { [`${rskTxHash}_confirms`]: rskConfirms };
+      if (rskConfirms >= 10 && !alertedQueued) updates[`${rskTxHash}_queued`] = true;
+      if (complete && !alertedComplete)         updates[`${rskTxHash}_complete`] = true;
+      saveState({ ...loadState(), ...updates });
 
       if (rskConfirms >= 10 && !alertedQueued) {
         alertedQueued = true;
-        saveState({ ...loadState(), [`${rskTxHash}_queued`]: true });
         await sendAlert(
           `🔄 *PowPeg Peg-Out Queued*\nRSK Tx: \`${rskTxHash}\`\n${rskConfirms} RSK confirmations so far.\nNetwork: ${NETWORK}`
         );
@@ -315,12 +340,15 @@ async function monitorPegout(rskTxHash) {
 
       if (complete && !alertedComplete) {
         alertedComplete = true;
-        saveState({ ...loadState(), [`${rskTxHash}_complete`]: true });
         await sendAlert(
           `✅ *PowPeg Peg-Out Complete*\nRSK Tx: \`${rskTxHash}\`\n${PEGOUT_REQUIRED} RSK confirmations reached. BTC broadcast.\nNetwork: ${NETWORK}`
         );
       }
     } catch (err) {
+      if (err instanceof FatalError) {
+        console.error(`\n  Fatal: ${err.message}\n`);
+        process.exit(1);
+      }
       console.error(`  Poll error: ${err.message}`);
     }
   }
@@ -328,7 +356,7 @@ async function monitorPegout(rskTxHash) {
   await poll();
   const timer = setInterval(poll, POLL_INTERVAL);
 
-  process.on("SIGINT", () => {
+  process.once("SIGINT", () => {
     clearInterval(timer);
     console.log("\n  Monitor stopped.\n");
     process.exit(0);
@@ -336,6 +364,9 @@ async function monitorPegout(rskTxHash) {
 }
 
 // ── Entry point ────────────────────────────────────────────────────────────────
+
+const BTC_HASH_RE = /^[0-9a-fA-F]{64}$/;
+const RSK_HASH_RE = /^0x[0-9a-fA-F]{64}$/i;
 
 if (require.main === module) {
   const [, , mode, txHash, rskAddress] = process.argv;
@@ -345,10 +376,20 @@ if (require.main === module) {
       console.error("Usage: node monitor.js pegin <btcTxHash> <rskAddress>");
       process.exit(1);
     }
+    // Strip accidental 0x before validating — monitorPegin also strips it
+    const cleanHash = txHash.replace(/^0x/i, "");
+    if (!BTC_HASH_RE.test(cleanHash)) {
+      console.error("Error: BTC tx hash must be exactly 64 hex characters.");
+      process.exit(1);
+    }
     monitorPegin(txHash, rskAddress);
   } else if (mode === "pegout") {
     if (!txHash) {
       console.error("Usage: node monitor.js pegout <rskTxHash>");
+      process.exit(1);
+    }
+    if (!RSK_HASH_RE.test(txHash)) {
+      console.error("Error: RSK tx hash must be 0x followed by 64 hex characters.");
       process.exit(1);
     }
     monitorPegout(txHash);

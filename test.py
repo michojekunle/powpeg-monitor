@@ -44,6 +44,8 @@ from web3 import Web3
 _HERE = Path(__file__).parent
 sys.path.insert(0, str(_HERE))
 
+import re
+
 from monitor import (
     FatalError,
     load_state, save_state,
@@ -297,6 +299,60 @@ class TestValidatePeginTarget(unittest.TestCase):
         self._run_or_skip(run)
 
 
+# ── Input validation tests ────────────────────────────────────────────────────
+
+class TestInputValidation(unittest.TestCase):
+
+    BTC_HASH_RE = re.compile(r"^[0-9a-fA-F]{64}$")
+    RSK_HASH_RE = re.compile(r"^0x[0-9a-fA-F]{64}$", re.IGNORECASE)
+
+    def test_valid_btc_hash_passes_regex(self):
+        h = "a74918ced40b93d8cf9843cc952db41d233fda569ae60cee240292153a529526"
+        self.assertRegex(h, self.BTC_HASH_RE)
+
+    def test_btc_hash_with_0x_stripped_passes_regex(self):
+        raw   = "0xa74918ced40b93d8cf9843cc952db41d233fda569ae60cee240292153a529526"
+        clean = raw[2:]
+        self.assertRegex(clean, self.BTC_HASH_RE)
+
+    def test_btc_hash_too_short_fails(self):
+        self.assertNotRegex("abc123", self.BTC_HASH_RE)
+
+    def test_btc_hash_non_hex_chars_fails(self):
+        self.assertNotRegex("z" + "a" * 63, self.BTC_HASH_RE)
+
+    def test_valid_rsk_hash_passes_regex(self):
+        h = "0x7695bb4c1dbaf9840d3cafb3fa539162f5f116e7d74cf25bad604a9dd4669d19"
+        self.assertRegex(h, self.RSK_HASH_RE)
+
+    def test_rsk_hash_without_0x_fails(self):
+        h = "7695bb4c1dbaf9840d3cafb3fa539162f5f116e7d74cf25bad604a9dd4669d19"
+        self.assertNotRegex(h, self.RSK_HASH_RE)
+
+    def test_rsk_hash_too_short_fails(self):
+        self.assertNotRegex("0xdeadbeef", self.RSK_HASH_RE)
+
+    def test_network_value_is_valid(self):
+        self.assertIn(NETWORK, ("mainnet", "testnet"))
+
+    def test_save_state_is_atomic_no_tmp_file(self):
+        """Atomic write must not leave a .tmp file after completion."""
+        backup = None
+        if os.path.exists(STATE_FILE):
+            with open(STATE_FILE) as f:
+                backup = f.read()
+        try:
+            save_state({"_atomic_test": True})
+            tmp_path = STATE_FILE + ".tmp"
+            self.assertFalse(os.path.exists(tmp_path), ".tmp file should not persist after save_state")
+        finally:
+            if backup is not None:
+                with open(STATE_FILE, "w") as f:
+                    f.write(backup)
+            elif os.path.exists(STATE_FILE):
+                os.unlink(STATE_FILE)
+
+
 # ── Peg-out receipt tests (live RSK RPC) ─────────────────────────────────────
 
 class TestPegoutReceipt(unittest.TestCase):
@@ -389,6 +445,7 @@ if __name__ == "__main__":
         TestUtilities,
         TestStatePersistence,
         TestRetryWrapper,
+        TestInputValidation,
         TestBridgeContract,
         TestBlockstreamAPI,
         TestValidatePeginTarget,

@@ -390,6 +390,71 @@ async function runPegoutReceiptTests() {
   });
 }
 
+async function runInputValidationTests() {
+  section("Input validation (hash format + NETWORK)");
+
+  const BTC_HASH_RE = /^[0-9a-fA-F]{64}$/;
+  const RSK_HASH_RE = /^0x[0-9a-fA-F]{64}$/i;
+
+  await test("valid 64-char BTC tx hash passes regex", () => {
+    const hash = "a74918ced40b93d8cf9843cc952db41d233fda569ae60cee240292153a529526";
+    assert.ok(BTC_HASH_RE.test(hash), `Expected match for ${hash}`);
+  });
+
+  await test("BTC hash with 0x prefix (after strip) passes regex", () => {
+    const raw   = "0xa74918ced40b93d8cf9843cc952db41d233fda569ae60cee240292153a529526";
+    const clean = raw.replace(/^0x/i, "");
+    assert.ok(BTC_HASH_RE.test(clean));
+  });
+
+  await test("BTC hash too short fails regex", () => {
+    assert.ok(!BTC_HASH_RE.test("abc123"), "Short string should not match");
+  });
+
+  await test("BTC hash with non-hex chars fails regex", () => {
+    const bad = "z" + "a".repeat(63);
+    assert.ok(!BTC_HASH_RE.test(bad));
+  });
+
+  await test("valid RSK tx hash (0x + 64 hex) passes regex", () => {
+    const hash = "0x7695bb4c1dbaf9840d3cafb3fa539162f5f116e7d74cf25bad604a9dd4669d19";
+    assert.ok(RSK_HASH_RE.test(hash));
+  });
+
+  await test("RSK hash without 0x prefix fails regex", () => {
+    const hash = "7695bb4c1dbaf9840d3cafb3fa539162f5f116e7d74cf25bad604a9dd4669d19";
+    assert.ok(!RSK_HASH_RE.test(hash));
+  });
+
+  await test("RSK hash that is too short fails regex", () => {
+    assert.ok(!RSK_HASH_RE.test("0xdeadbeef"));
+  });
+
+  await test("NETWORK value is valid (mainnet or testnet)", () => {
+    assert.ok(
+      ["mainnet", "testnet"].includes(NETWORK),
+      `NETWORK="${NETWORK}" is not valid`
+    );
+  });
+
+  await test("saveState write is atomic (no stale .tmp file left)", () => {
+    const backup = fs.existsSync(STATE_FILE)
+      ? fs.readFileSync(STATE_FILE, "utf8")
+      : null;
+
+    saveState({ _atomic_test: true });
+    const tmpPath = STATE_FILE + ".tmp";
+    // The temp file must be cleaned up after rename
+    assert.ok(!fs.existsSync(tmpPath), ".tmp file should not persist after saveState");
+
+    if (backup !== null) {
+      fs.writeFileSync(STATE_FILE, backup);
+    } else if (fs.existsSync(STATE_FILE)) {
+      fs.unlinkSync(STATE_FILE);
+    }
+  });
+}
+
 async function runAlertTests() {
   section("Alert configuration");
 
@@ -460,6 +525,7 @@ async function main() {
   await runUtilityTests();
   await runStateTests();
   await runRetryTests();
+  await runInputValidationTests();
   await runBridgeContractTests();
   await runBlockstreamTests();
   await runValidationTests();

@@ -5,8 +5,10 @@ Tracks peg-in (BTC → rBTC) and peg-out (rBTC → BTC) confirmation progress.
 
 import json
 import os
+import re
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
@@ -26,8 +28,16 @@ RSK_RPC_URL    = os.getenv("RSK_RPC_URL")
 BRIDGE_ADDRESS = os.getenv("BRIDGE_ADDRESS", "0x0000000000000000000000000000000001000006")
 NETWORK        = os.getenv("NETWORK", "testnet")
 POLL_INTERVAL  = 60
-_HERE      = Path(__file__).parent
-STATE_FILE = str(_HERE / "monitor-state.json")
+_HERE          = Path(__file__).parent
+STATE_FILE     = str(_HERE / "monitor-state.json")
+
+if not RSK_RPC_URL:
+    print("RSK_RPC_URL is not set in .env")
+    sys.exit(1)
+
+if NETWORK not in ("mainnet", "testnet"):
+    print(f'Error: NETWORK="{NETWORK}" is invalid — must be "mainnet" or "testnet" in .env')
+    sys.exit(1)
 
 PEGIN_REQUIRED  = 100 if NETWORK == "mainnet" else 10
 PEGOUT_REQUIRED = 4000 if NETWORK == "mainnet" else 10
@@ -40,14 +50,14 @@ BTC_API = (
     else "https://blockstream.info/testnet/api"
 )
 
-if not RSK_RPC_URL:
-    print("RSK_RPC_URL is not set in .env")
-    sys.exit(1)
-
 w3 = Web3(Web3.HTTPProvider(RSK_RPC_URL))
 
-with open(_HERE / "bridge-abi.json") as f:
-    BRIDGE_ABI = json.load(f)
+try:
+    with open(_HERE / "bridge-abi.json") as f:
+        BRIDGE_ABI = json.load(f)
+except FileNotFoundError:
+    print("Error: bridge-abi.json not found. Run: git checkout bridge-abi.json")
+    sys.exit(1)
 
 bridge = w3.eth.contract(
     address=Web3.to_checksum_address(BRIDGE_ADDRESS),
@@ -66,8 +76,12 @@ def load_state() -> dict:
     return {}
 
 def save_state(state: dict) -> None:
-    with open(STATE_FILE, "w") as f:
+    # Write to a temp file then replace — atomic on POSIX, prevents a kill signal
+    # mid-write from leaving a truncated/corrupt state file.
+    tmp = STATE_FILE + ".tmp"
+    with open(tmp, "w") as f:
         json.dump(state, f, indent=2)
+    os.replace(tmp, STATE_FILE)
 
 # ── Utilities ──────────────────────────────────────────────────────────────────
 
@@ -118,8 +132,11 @@ def send_discord(message: str) -> None:
 
 def send_alert(message: str) -> None:
     print(f"\n  [ALERT] {message}\n")
-    send_telegram(message)
-    send_discord(message)
+    # Fire Telegram and Discord concurrently — each has a 10s timeout so
+    # running them sequentially would block the poll loop for up to 20s.
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        executor.submit(send_telegram, message)
+        executor.submit(send_discord, message)
 
 # ── Retry wrapper ──────────────────────────────────────────────────────────────
 
@@ -207,8 +224,8 @@ def monitor_pegin(btc_tx_hash: str, rsk_address: str) -> None:
                 tx_block  = tx["status"]["block_height"]
                 # Clamp to 0: Bridge SPV view can temporarily lag behind the BTC tx block
                 confirms  = max(0, bridge_btc_height - tx_block + 1)
-                remaining   = max(0, PEGIN_REQUIRED - confirms)
-                complete    = confirms >= PEGIN_REQUIRED
+                remaining = max(0, PEGIN_REQUIRED - confirms)
+                complete  = confirms >= PEGIN_REQUIRED
 
                 print_status("PEG-IN (BTC → rBTC)", {
                     "BTC Tx Hash"      : f"{btc_tx_hash[:20]}...",
@@ -221,14 +238,17 @@ def monitor_pegin(btc_tx_hash: str, rsk_address: str) -> None:
                     "ETA"              : seconds_to_human(remaining * BTC_BLOCK_TIME) if remaining > 0 else "Done",
                 })
 
+                # Single merged write per cycle — prevents a kill-between-writes
+                # leaving _complete unset and causing a duplicate alert on restart.
+                updates = {f"{btc_tx_hash}_confirms": confirms}
+                if complete and not alerted_complete:
+                    updates[f"{btc_tx_hash}_complete"] = True
                 current = load_state()
-                current[f"{btc_tx_hash}_confirms"] = confirms
+                current.update(updates)
                 save_state(current)
 
                 if complete and not alerted_complete:
                     alerted_complete = True
-                    current[f"{btc_tx_hash}_complete"] = True
-                    save_state(current)
                     send_alert(
                         f"✅ *PowPeg Peg-In Complete*\n"
                         f"BTC Tx: `{btc_tx_hash}`\n"
@@ -236,6 +256,9 @@ def monitor_pegin(btc_tx_hash: str, rsk_address: str) -> None:
                         f"Network: {NETWORK}"
                     )
 
+        except FatalError as e:
+            print(f"\n  Fatal: {e}\n")
+            sys.exit(1)
         except Exception as e:
             print(f"  Poll error: {e}")
 
@@ -298,14 +321,18 @@ def monitor_pegout(rsk_tx_hash: str) -> None:
                     "ETA"           : seconds_to_human(remaining * RSK_BLOCK_TIME) if remaining > 0 else "Done",
                 })
 
+                # Single merged write per cycle — prevents duplicate alerts on restart.
+                updates = {f"{rsk_tx_hash}_confirms": confirms}
+                if confirms >= 10 and not alerted_queued:
+                    updates[f"{rsk_tx_hash}_queued"] = True
+                if complete and not alerted_complete:
+                    updates[f"{rsk_tx_hash}_complete"] = True
                 current = load_state()
-                current[f"{rsk_tx_hash}_confirms"] = confirms
+                current.update(updates)
                 save_state(current)
 
                 if confirms >= 10 and not alerted_queued:
                     alerted_queued = True
-                    current[f"{rsk_tx_hash}_queued"] = True
-                    save_state(current)
                     send_alert(
                         f"🔄 *PowPeg Peg-Out Queued*\n"
                         f"RSK Tx: `{rsk_tx_hash}`\n"
@@ -315,8 +342,6 @@ def monitor_pegout(rsk_tx_hash: str) -> None:
 
                 if complete and not alerted_complete:
                     alerted_complete = True
-                    current[f"{rsk_tx_hash}_complete"] = True
-                    save_state(current)
                     send_alert(
                         f"✅ *PowPeg Peg-Out Complete*\n"
                         f"RSK Tx: `{rsk_tx_hash}`\n"
@@ -324,12 +349,18 @@ def monitor_pegout(rsk_tx_hash: str) -> None:
                         f"Network: {NETWORK}"
                     )
 
+        except FatalError as e:
+            print(f"\n  Fatal: {e}\n")
+            sys.exit(1)
         except Exception as e:
             print(f"  Poll error: {e}")
 
         time.sleep(POLL_INTERVAL)
 
 # ── Entry point ────────────────────────────────────────────────────────────────
+
+BTC_HASH_RE = re.compile(r"^[0-9a-fA-F]{64}$")
+RSK_HASH_RE = re.compile(r"^0x[0-9a-fA-F]{64}$", re.IGNORECASE)
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
@@ -342,9 +373,18 @@ if __name__ == "__main__":
         if len(sys.argv) < 4:
             print("Usage: python monitor.py pegin <btcTxHash> <rskAddress>")
             sys.exit(1)
-        monitor_pegin(sys.argv[2], sys.argv[3])
+        raw_hash = sys.argv[2]
+        clean_hash = raw_hash[2:] if raw_hash.lower().startswith("0x") else raw_hash
+        if not BTC_HASH_RE.match(clean_hash):
+            print("Error: BTC tx hash must be exactly 64 hex characters.")
+            sys.exit(1)
+        monitor_pegin(raw_hash, sys.argv[3])
     elif mode == "pegout":
-        monitor_pegout(sys.argv[2])
+        raw_hash = sys.argv[2]
+        if not RSK_HASH_RE.match(raw_hash):
+            print("Error: RSK tx hash must be 0x followed by 64 hex characters.")
+            sys.exit(1)
+        monitor_pegout(raw_hash)
     else:
         print("Mode must be 'pegin' or 'pegout'")
         sys.exit(1)
