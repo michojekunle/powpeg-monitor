@@ -304,7 +304,7 @@ async function monitorPegin(btcTxHash, rskAddress) {
       if (complete && !alertedComplete) {
         alertedComplete = true;
         await sendAlert(
-          `✅ *PowPeg Peg-In Complete*\nBTC Tx: \`${btcTxHash}\`\nrBTC credited to: \`${rskAddress}\`\nNetwork: ${NETWORK}`,
+          `*PowPeg Peg-In Complete*\nBTC Tx: \`${btcTxHash}\`\nrBTC credited to: \`${rskAddress}\`\nNetwork: ${NETWORK}`,
         );
       }
     } catch (err) {
@@ -409,14 +409,14 @@ async function monitorPegout(rskTxHash) {
       if (rskConfirms >= 10 && !alertedQueued) {
         alertedQueued = true;
         await sendAlert(
-          `🔄 *PowPeg Peg-Out Queued*\nRSK Tx: \`${rskTxHash}\`\n${rskConfirms} RSK confirmations so far.\nNetwork: ${NETWORK}`,
+          `*PowPeg Peg-Out Queued*\nRSK Tx: \`${rskTxHash}\`\n${rskConfirms} RSK confirmations so far.\nNetwork: ${NETWORK}`,
         );
       }
 
       if (complete && !alertedComplete) {
         alertedComplete = true;
         await sendAlert(
-          `✅ *PowPeg Peg-Out Complete*\nRSK Tx: \`${rskTxHash}\`\n${PEGOUT_REQUIRED} RSK confirmations reached. BTC broadcast.\nNetwork: ${NETWORK}`,
+          `*PowPeg Peg-Out Complete*\nRSK Tx: \`${rskTxHash}\`\n${PEGOUT_REQUIRED} RSK confirmations reached. BTC broadcast.\nNetwork: ${NETWORK}`,
         );
       }
     } catch (err) {
