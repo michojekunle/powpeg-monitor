@@ -258,7 +258,7 @@ async function monitorPegin(btcTxHash, rskAddress) {
         "Bridge BTC Height": String(bridgeBtcHeight),
         Confirmations: `${btcConfirmations} / ${PEGIN_REQUIRED}`,
         Status: complete
-          ? "✓ COMPLETE — rBTC credited"
+          ? "COMPLETE — rBTC credited"
           : `Waiting (${btcConfirmations}/${PEGIN_REQUIRED} BTC blocks)`,
         ETA:
           remaining > 0 ? secondsToHuman(remaining * BTC_BLOCK_TIME) : "Done",
@@ -273,7 +273,7 @@ async function monitorPegin(btcTxHash, rskAddress) {
       if (complete && !alertedComplete) {
         alertedComplete = true;
         await sendAlert(
-          `✅ *PowPeg Peg-In Complete*\nBTC Tx: \`${btcTxHash}\`\nrBTC credited to: \`${rskAddress}\`\nNetwork: ${NETWORK}`,
+          `*PowPeg Peg-In Complete*\nBTC Tx: \`${btcTxHash}\`\nrBTC credited to: \`${rskAddress}\`\nNetwork: ${NETWORK}`,
         );
       }
     } catch (err) {
@@ -339,7 +339,7 @@ async function monitorPegout(rskTxHash) {
       // 10 RSK confirms = ~5 min — early indicator the tx is safely included;
       // not a protocol threshold, just a useful status boundary for the display.
       const status = complete
-        ? "✓ COMPLETE — BTC broadcast"
+        ? "COMPLETE — BTC broadcast"
         : rskConfirms >= 10
           ? `Processing (${rskConfirms}/${PEGOUT_REQUIRED} RSK blocks)`
           : "Queued — awaiting minimum confirmations";
@@ -366,14 +366,14 @@ async function monitorPegout(rskTxHash) {
       if (rskConfirms >= 10 && !alertedQueued) {
         alertedQueued = true;
         await sendAlert(
-          `🔄 *PowPeg Peg-Out Queued*\nRSK Tx: \`${rskTxHash}\`\n${rskConfirms} RSK confirmations so far.\nNetwork: ${NETWORK}`,
+          `*PowPeg Peg-Out Queued*\nRSK Tx: \`${rskTxHash}\`\n${rskConfirms} RSK confirmations so far.\nNetwork: ${NETWORK}`,
         );
       }
 
       if (complete && !alertedComplete) {
         alertedComplete = true;
         await sendAlert(
-          `✅ *PowPeg Peg-Out Complete*\nRSK Tx: \`${rskTxHash}\`\n${PEGOUT_REQUIRED} RSK confirmations reached. BTC broadcast.\nNetwork: ${NETWORK}`,
+          `*PowPeg Peg-Out Complete*\nRSK Tx: \`${rskTxHash}\`\n${PEGOUT_REQUIRED} RSK confirmations reached. BTC broadcast.\nNetwork: ${NETWORK}`,
         );
       }
     } catch (err) {

@@ -233,7 +233,7 @@ def monitor_pegin(btc_tx_hash: str, rsk_address: str) -> None:
                     "BTC Tx Block"     : str(tx_block),
                     "Bridge BTC Height": str(bridge_btc_height),
                     "Confirmations"    : f"{confirms} / {PEGIN_REQUIRED}",
-                    "Status"           : "✓ COMPLETE — rBTC credited" if complete
+                    "Status"           : "COMPLETE — rBTC credited" if complete
                                          else f"Waiting ({confirms}/{PEGIN_REQUIRED} BTC blocks)",
                     "ETA"              : seconds_to_human(remaining * BTC_BLOCK_TIME) if remaining > 0 else "Done",
                 })
@@ -250,7 +250,7 @@ def monitor_pegin(btc_tx_hash: str, rsk_address: str) -> None:
                 if complete and not alerted_complete:
                     alerted_complete = True
                     send_alert(
-                        f"✅ *PowPeg Peg-In Complete*\n"
+                        f"*PowPeg Peg-In Complete*\n"
                         f"BTC Tx: `{btc_tx_hash}`\n"
                         f"rBTC credited to: `{rsk_address}`\n"
                         f"Network: {NETWORK}"
@@ -303,7 +303,7 @@ def monitor_pegout(rsk_tx_hash: str) -> None:
                 # 10 RSK confirms = ~5 min — early indicator the tx is safely included;
                 # not a protocol threshold, just a useful status boundary for the display.
                 status = (
-                    "✓ COMPLETE — BTC broadcast"
+                    "COMPLETE — BTC broadcast"
                     if complete
                     else f"Processing ({confirms}/{PEGOUT_REQUIRED} RSK blocks)"
                     if confirms >= 10
@@ -334,7 +334,7 @@ def monitor_pegout(rsk_tx_hash: str) -> None:
                 if confirms >= 10 and not alerted_queued:
                     alerted_queued = True
                     send_alert(
-                        f"🔄 *PowPeg Peg-Out Queued*\n"
+                        f"*PowPeg Peg-Out Queued*\n"
                         f"RSK Tx: `{rsk_tx_hash}`\n"
                         f"{confirms} RSK confirmations so far.\n"
                         f"Network: {NETWORK}"
@@ -343,7 +343,7 @@ def monitor_pegout(rsk_tx_hash: str) -> None:
                 if complete and not alerted_complete:
                     alerted_complete = True
                     send_alert(
-                        f"✅ *PowPeg Peg-Out Complete*\n"
+                        f"*PowPeg Peg-Out Complete*\n"
                         f"RSK Tx: `{rsk_tx_hash}`\n"
                         f"{PEGOUT_REQUIRED} RSK confirmations reached. BTC broadcast.\n"
                         f"Network: {NETWORK}"

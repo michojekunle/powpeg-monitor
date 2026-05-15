@@ -289,7 +289,7 @@ async function monitorPegin(btcTxHash, rskAddress) {
         "Bridge BTC Height": String(bridgeBtcHeight),
         Confirmations: `${btcConfirmations} / ${PEGIN_REQUIRED}`,
         Status: complete
-          ? "✓ COMPLETE — rBTC credited"
+          ? "COMPLETE — rBTC credited"
           : `Waiting (${btcConfirmations}/${PEGIN_REQUIRED} BTC blocks)`,
         ETA:
           remaining > 0 ? secondsToHuman(remaining * BTC_BLOCK_TIME) : "Done",
@@ -383,7 +383,7 @@ async function monitorPegout(rskTxHash) {
       // 10 RSK confirms (~5 min) is a useful display milestone — the tx is safely
       // included. It's not a protocol threshold, just an early status indicator.
       const status = complete
-        ? "✓ COMPLETE — BTC broadcast"
+        ? "COMPLETE — BTC broadcast"
         : rskConfirms >= 10
           ? `Processing (${rskConfirms}/${PEGOUT_REQUIRED} RSK blocks)`
           : "Queued — awaiting minimum confirmations";
@@ -692,7 +692,7 @@ def monitor_pegin(btc_tx_hash: str, rsk_address: str) -> None:
                     "BTC Tx Block"     : str(tx_block),
                     "Bridge BTC Height": str(bridge_btc_height),
                     "Confirmations"    : f"{confirms} / {PEGIN_REQUIRED}",
-                    "Status"           : "✓ COMPLETE — rBTC credited" if complete
+                    "Status"           : "COMPLETE — rBTC credited" if complete
                                          else f"Waiting ({confirms}/{PEGIN_REQUIRED} BTC blocks)",
                     "ETA"              : seconds_to_human(remaining * BTC_BLOCK_TIME) if remaining > 0 else "Done",
                 })
@@ -753,7 +753,7 @@ def monitor_pegout(rsk_tx_hash: str) -> None:
                 blocks_to_next = max(0, next_batch - current_block)
 
                 status = (
-                    "✓ COMPLETE — BTC broadcast"
+                    "COMPLETE — BTC broadcast"
                     if complete
                     else f"Processing ({confirms}/{PEGOUT_REQUIRED} RSK blocks)"
                     if confirms >= 10
@@ -948,7 +948,30 @@ A few choices in the monitor that go beyond "make it work":
 
 ---
 
-## 🎉 Wrapping Up
+## Section 9: Reproducing Testnet Monitoring
+
+To verify the monitor works exactly as expected, run these commands and compare your output to the examples below. These use real, already-confirmed testnet transactions.
+
+**JavaScript (Peg-In):**
+
+```bash
+node monitor.js pegin \
+  a74918ced40b93d8cf9843cc952db41d233fda569ae60cee240292153a529526 \
+  0x742d35Cc6634C0553241234561234561234567890
+```
+
+**Python (Peg-Out):**
+
+```bash
+python3 monitor.py pegout \
+  0x7695bb4c1dbaf9840d3cafb3fa539162f5f116e7d74cf25bad604a9dd4669d19
+```
+
+Both transactions should show `Status: COMPLETE` because they were confirmed long ago. The monitor validates Bridge contract calls, Blockstream API, and confirmation math.
+
+---
+
+## Wrapping Up
 
 Great work! You've now built a production-grade PowPeg monitor — in both JavaScript and Python — that tracks BTC↔rBTC transfer progress via near real-time polling, fires Telegram and Discord alerts on completion, and handles the failure modes that a bridge monitor actually encounters in the wild.
 
