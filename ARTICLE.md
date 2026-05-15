@@ -11,7 +11,7 @@ By the end of this tutorial, you'll have a **working monitor** that:
 
 The complete code is on GitHub: [github.com/michojekunle/powpeg-monitor](https://github.com/michojekunle/powpeg-monitor)
 
-Let's dive in and see how Rootstock's PowPeg enables decentralized Bitcoin bridging — and how to watch it in near real-time.
+Let's dive in and see how Rootstock's PowPeg enables trust-minimized Bitcoin bridging — and how to watch it in near real time.
 
 ---
 
@@ -289,7 +289,7 @@ async function monitorPegin(btcTxHash, rskAddress) {
         "Bridge BTC Height": String(bridgeBtcHeight),
         Confirmations: `${btcConfirmations} / ${PEGIN_REQUIRED}`,
         Status: complete
-          ? "COMPLETE — rBTC credited"
+          ? "✓ COMPLETE — rBTC credited"
           : `Waiting (${btcConfirmations}/${PEGIN_REQUIRED} BTC blocks)`,
         ETA:
           remaining > 0 ? secondsToHuman(remaining * BTC_BLOCK_TIME) : "Done",
@@ -304,7 +304,7 @@ async function monitorPegin(btcTxHash, rskAddress) {
       if (complete && !alertedComplete) {
         alertedComplete = true;
         await sendAlert(
-          `*PowPeg Peg-In Complete*\nBTC Tx: \`${btcTxHash}\`\nrBTC credited to: \`${rskAddress}\`\nNetwork: ${NETWORK}`,
+          `✅ *PowPeg Peg-In Complete*\nBTC Tx: \`${btcTxHash}\`\nrBTC credited to: \`${rskAddress}\`\nNetwork: ${NETWORK}`,
         );
       }
     } catch (err) {
@@ -383,7 +383,7 @@ async function monitorPegout(rskTxHash) {
       // 10 RSK confirms (~5 min) is a useful display milestone — the tx is safely
       // included. It's not a protocol threshold, just an early status indicator.
       const status = complete
-        ? "COMPLETE — BTC broadcast"
+        ? "✓ COMPLETE — BTC broadcast"
         : rskConfirms >= 10
           ? `Processing (${rskConfirms}/${PEGOUT_REQUIRED} RSK blocks)`
           : "Queued — awaiting minimum confirmations";
@@ -409,14 +409,14 @@ async function monitorPegout(rskTxHash) {
       if (rskConfirms >= 10 && !alertedQueued) {
         alertedQueued = true;
         await sendAlert(
-          `*PowPeg Peg-Out Queued*\nRSK Tx: \`${rskTxHash}\`\n${rskConfirms} RSK confirmations so far.\nNetwork: ${NETWORK}`,
+          `🔄 *PowPeg Peg-Out Queued*\nRSK Tx: \`${rskTxHash}\`\n${rskConfirms} RSK confirmations so far.\nNetwork: ${NETWORK}`,
         );
       }
 
       if (complete && !alertedComplete) {
         alertedComplete = true;
         await sendAlert(
-          `*PowPeg Peg-Out Complete*\nRSK Tx: \`${rskTxHash}\`\n${PEGOUT_REQUIRED} RSK confirmations reached. BTC broadcast.\nNetwork: ${NETWORK}`,
+          `✅ *PowPeg Peg-Out Complete*\nRSK Tx: \`${rskTxHash}\`\n${PEGOUT_REQUIRED} RSK confirmations reached. BTC broadcast.\nNetwork: ${NETWORK}`,
         );
       }
     } catch (err) {
@@ -692,7 +692,7 @@ def monitor_pegin(btc_tx_hash: str, rsk_address: str) -> None:
                     "BTC Tx Block"     : str(tx_block),
                     "Bridge BTC Height": str(bridge_btc_height),
                     "Confirmations"    : f"{confirms} / {PEGIN_REQUIRED}",
-                    "Status"           : "COMPLETE — rBTC credited" if complete
+                    "Status"           : "✓ COMPLETE — rBTC credited" if complete
                                          else f"Waiting ({confirms}/{PEGIN_REQUIRED} BTC blocks)",
                     "ETA"              : seconds_to_human(remaining * BTC_BLOCK_TIME) if remaining > 0 else "Done",
                 })
@@ -753,7 +753,7 @@ def monitor_pegout(rsk_tx_hash: str) -> None:
                 blocks_to_next = max(0, next_batch - current_block)
 
                 status = (
-                    "COMPLETE — BTC broadcast"
+                    "✓ COMPLETE — BTC broadcast"
                     if complete
                     else f"Processing ({confirms}/{PEGOUT_REQUIRED} RSK blocks)"
                     if confirms >= 10
