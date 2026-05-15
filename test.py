@@ -20,7 +20,7 @@ from unittest.mock import MagicMock, patch
 from dotenv import load_dotenv
 load_dotenv()
 
-# ── Guard: check deps before importing monitor ─────────────────────────────────
+# -- Guard: check deps before importing monitor --
 
 def check_deps():
     missing = []
@@ -56,14 +56,14 @@ from monitor import (
     NETWORK, PEGIN_REQUIRED, PEGOUT_REQUIRED, BTC_API, STATE_FILE,
 )
 
-# ── Test values ────────────────────────────────────────────────────────────────
+# -- Test values --
 
 TESTNET_PEGIN_TX  = "a74918ced40b93d8cf9843cc952db41d233fda569ae60cee240292153a529526"
 TESTNET_PEGOUT_TX = "0x7695bb4c1dbaf9840d3cafb3fa539162f5f116e7d74cf25bad604a9dd4669d19"
 TESTNET_FED_ADDR  = "2N88sMiizxmbb8Y3yA4AtYmL1RxHogWfoHa"
 DUMMY_RSK_ADDR    = "0x742d35Cc6634C0553241234561234561234567890"
 
-# ── Utility tests ──────────────────────────────────────────────────────────────
+# -- Utility tests --
 
 class TestUtilities(unittest.TestCase):
 
@@ -108,7 +108,7 @@ class TestUtilities(unittest.TestCase):
         self.assertEqual(confirms, 7064)
 
 
-# ── State persistence tests ────────────────────────────────────────────────────
+# -- State persistence tests --
 
 class TestStatePersistence(unittest.TestCase):
 
@@ -155,7 +155,7 @@ class TestStatePersistence(unittest.TestCase):
         self.assertEqual(state["key_b"], 2)
 
 
-# ── Retry wrapper tests ────────────────────────────────────────────────────────
+# -- Retry wrapper tests --
 
 class TestRetryWrapper(unittest.TestCase):
 
@@ -190,7 +190,7 @@ class TestRetryWrapper(unittest.TestCase):
         self.assertEqual(len(attempts), 3)
 
 
-# ── Bridge contract tests (live RSK RPC) ──────────────────────────────────────
+# -- Bridge contract tests (live RSK RPC) --
 
 class TestBridgeContract(unittest.TestCase):
 
@@ -218,7 +218,7 @@ class TestBridgeContract(unittest.TestCase):
         self.assertGreater(block, 0)
 
 
-# ── Blockstream API tests ──────────────────────────────────────────────────────
+# -- Blockstream API tests --
 
 BLOCKSTREAM_AVAILABLE = False
 try:
@@ -265,7 +265,7 @@ class TestBlockstreamAPI(unittest.TestCase):
         self.assertEqual(r.status_code, 404)
 
 
-# ── validatePeginTarget tests ──────────────────────────────────────────────────
+# -- validatePeginTarget tests --
 
 @unittest.skipUnless(BLOCKSTREAM_AVAILABLE, "Blockstream API unavailable — skipping")
 class TestValidatePeginTarget(unittest.TestCase):
@@ -299,7 +299,7 @@ class TestValidatePeginTarget(unittest.TestCase):
         self._run_or_skip(run)
 
 
-# ── Input validation tests ────────────────────────────────────────────────────
+# -- Input validation tests --
 
 class TestInputValidation(unittest.TestCase):
 
@@ -353,7 +353,7 @@ class TestInputValidation(unittest.TestCase):
                 os.unlink(STATE_FILE)
 
 
-# ── Peg-out receipt tests (live RSK RPC) ─────────────────────────────────────
+# -- Peg-out receipt tests (live RSK RPC) --
 
 class TestPegoutReceipt(unittest.TestCase):
 
@@ -373,7 +373,7 @@ class TestPegoutReceipt(unittest.TestCase):
         self.assertGreater(confirms, 0)
 
 
-# ── Alert configuration tests ──────────────────────────────────────────────────
+# -- Alert configuration tests --
 
 class TestAlertConfiguration(unittest.TestCase):
 
@@ -428,7 +428,7 @@ class TestAlertConfiguration(unittest.TestCase):
         self.assertIn(r.status_code, (200, 204), f"Discord returned {r.status_code}")
 
 
-# ── Runner ─────────────────────────────────────────────────────────────────────
+# -- Runner --
 
 if __name__ == "__main__":
     print("\n╔════════════════════════════════════════════╗")

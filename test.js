@@ -9,23 +9,25 @@
  * Run: node test.js
  */
 
-const assert  = require("assert");
-const fs      = require("fs");
-const path    = require("path");
+const assert = require("assert");
+const fs = require("fs");
+const path = require("path");
 require("dotenv").config();
 
-// ── Helpers ────────────────────────────────────────────────────────────────────
+// -- Helpers --
 
-const PASS  = "✓";
-const FAIL  = "✗";
-const SKIP  = "⚠";
-let passed  = 0;
-let failed  = 0;
+const PASS = "✓";
+const FAIL = "✗";
+const SKIP = "⚠";
+let passed = 0;
+let failed = 0;
 let skipped = 0;
 
 // Errors from external APIs that are beyond our control — treat as skips
 const isExternalApiFailure = (err) =>
-  /Blockstream HTTP [5-9]\d\d|ECONNRESET|ECONNREFUSED|timeout|ETIMEDOUT/i.test(err.message);
+  /Blockstream HTTP [5-9]\d\d|ECONNRESET|ECONNREFUSED|timeout|ETIMEDOUT/i.test(
+    err.message,
+  );
 
 async function test(name, fn) {
   try {
@@ -34,7 +36,9 @@ async function test(name, fn) {
     passed++;
   } catch (err) {
     if (isExternalApiFailure(err)) {
-      console.log(`  ${SKIP}  ${name} (skipped — external API unavailable: ${err.message.slice(0, 60)})`);
+      console.log(
+        `  ${SKIP}  ${name} (skipped — external API unavailable: ${err.message.slice(0, 60)})`,
+      );
       skipped++;
     } else {
       console.log(`  ${FAIL}  ${name}`);
@@ -48,7 +52,7 @@ function section(label) {
   console.log(`\n── ${label} ${"─".repeat(50 - label.length)}`);
 }
 
-// ── Import monitor internals ───────────────────────────────────────────────────
+// -- Import monitor internals --
 
 const {
   withRetry,
@@ -66,14 +70,16 @@ const {
   STATE_FILE,
 } = require("./monitor.js");
 
-// ── Real testnet values ────────────────────────────────────────────────────────
+// -- Real testnet values --
 
-const TESTNET_PEGIN_TX  = "a74918ced40b93d8cf9843cc952db41d233fda569ae60cee240292153a529526";
-const TESTNET_PEGOUT_TX = "0x7695bb4c1dbaf9840d3cafb3fa539162f5f116e7d74cf25bad604a9dd4669d19";
-const TESTNET_FED_ADDR  = "2N88sMiizxmbb8Y3yA4AtYmL1RxHogWfoHa";
-const DUMMY_RSK_ADDR    = "0x742d35Cc6634C0553241234561234561234567890";
+const TESTNET_PEGIN_TX =
+  "a74918ced40b93d8cf9843cc952db41d233fda569ae60cee240292153a529526";
+const TESTNET_PEGOUT_TX =
+  "0x7695bb4c1dbaf9840d3cafb3fa539162f5f116e7d74cf25bad604a9dd4669d19";
+const TESTNET_FED_ADDR = "2N88sMiizxmbb8Y3yA4AtYmL1RxHogWfoHa";
+const DUMMY_RSK_ADDR = "0x742d35Cc6634C0553241234561234561234567890";
 
-// ── Test suites ────────────────────────────────────────────────────────────────
+// -- Test suites --
 
 async function runUtilityTests() {
   section("Utility functions");
@@ -96,10 +102,10 @@ async function runUtilityTests() {
 
   await test("confirmation thresholds are correct for network", () => {
     if (NETWORK === "mainnet") {
-      assert.strictEqual(PEGIN_REQUIRED,  100);
+      assert.strictEqual(PEGIN_REQUIRED, 100);
       assert.strictEqual(PEGOUT_REQUIRED, 4000);
     } else {
-      assert.strictEqual(PEGIN_REQUIRED,  10);
+      assert.strictEqual(PEGIN_REQUIRED, 10);
       assert.strictEqual(PEGOUT_REQUIRED, 10);
     }
   });
@@ -222,14 +228,14 @@ async function runRetryTests() {
   await test("confirmation math: clamped to zero when SPV lags", () => {
     // Simulate Bridge height behind tx block (transient lag)
     const bridgeBtcHeight = 4918810;
-    const txBlockHeight   = 4918812;
+    const txBlockHeight = 4918812;
     const confirms = Math.max(0, Number(bridgeBtcHeight) - txBlockHeight + 1);
     assert.strictEqual(confirms, 0);
   });
 
   await test("confirmation math: correct when SPV is ahead", () => {
     const bridgeBtcHeight = 4925875;
-    const txBlockHeight   = 4918812;
+    const txBlockHeight = 4918812;
     const confirms = Math.max(0, Number(bridgeBtcHeight) - txBlockHeight + 1);
     assert.strictEqual(confirms, 7064);
   });
@@ -239,16 +245,24 @@ async function runBridgeContractTests() {
   section("Bridge contract (live RSK RPC)");
 
   await test("getBtcBlockchainBestChainHeight returns a positive integer", async () => {
-    const height = await withRetry(() => bridge.getBtcBlockchainBestChainHeight());
+    const height = await withRetry(() =>
+      bridge.getBtcBlockchainBestChainHeight(),
+    );
     assert.ok(Number(height) > 0, `Expected positive height, got ${height}`);
   });
 
   await test("getFederationAddress returns a valid Bitcoin address", async () => {
     const addr = await withRetry(() => bridge.getFederationAddress());
-    assert.ok(typeof addr === "string" && addr.length > 10, `Bad address: ${addr}`);
+    assert.ok(
+      typeof addr === "string" && addr.length > 10,
+      `Bad address: ${addr}`,
+    );
     // Testnet P2SH addresses start with 2; mainnet with 3
     const prefix = NETWORK === "mainnet" ? "3" : "2";
-    assert.ok(addr.startsWith(prefix), `Expected address starting with '${prefix}', got ${addr}`);
+    assert.ok(
+      addr.startsWith(prefix),
+      `Expected address starting with '${prefix}', got ${addr}`,
+    );
   });
 
   await test("getQueuedPegoutsCount returns a non-negative integer", async () => {
@@ -257,13 +271,18 @@ async function runBridgeContractTests() {
   });
 
   await test("getNextPegoutCreationBlockNumber returns a positive integer", async () => {
-    const block = await withRetry(() => bridge.getNextPegoutCreationBlockNumber());
+    const block = await withRetry(() =>
+      bridge.getNextPegoutCreationBlockNumber(),
+    );
     assert.ok(Number(block) > 0, `Expected positive block, got ${block}`);
   });
 
   await test("provider can fetch current RSK block number", async () => {
     const blockNumber = await withRetry(() => provider.getBlockNumber());
-    assert.ok(blockNumber > 0, `Expected positive block number, got ${blockNumber}`);
+    assert.ok(
+      blockNumber > 0,
+      `Expected positive block number, got ${blockNumber}`,
+    );
   });
 }
 
@@ -271,9 +290,12 @@ async function runBridgeContractTests() {
 let _blockstreamAvailable = null;
 async function checkBlockstreamAvailable() {
   if (_blockstreamAvailable !== null) return _blockstreamAvailable;
-  const fetch = globalThis.fetch ?? require("node-fetch").default ?? require("node-fetch");
+  const fetch =
+    globalThis.fetch ?? require("node-fetch").default ?? require("node-fetch");
   try {
-    const r = await fetch(`${BTC_API}/blocks/tip/height`, { signal: AbortSignal.timeout(10000) });
+    const r = await fetch(`${BTC_API}/blocks/tip/height`, {
+      signal: AbortSignal.timeout(10000),
+    });
     _blockstreamAvailable = r.ok;
   } catch {
     _blockstreamAvailable = false;
@@ -286,19 +308,23 @@ async function runBlockstreamTests() {
 
   const blockstreamUp = await checkBlockstreamAvailable();
   if (!blockstreamUp) {
-    console.log("  ⚠  Blockstream API unavailable — skipping Blockstream tests");
+    console.log(
+      "  ⚠  Blockstream API unavailable — skipping Blockstream tests",
+    );
     return;
   }
 
-  const fetch = globalThis.fetch ?? require("node-fetch").default ?? require("node-fetch");
+  const fetch =
+    globalThis.fetch ?? require("node-fetch").default ?? require("node-fetch");
 
   // Helper: fetch with retry and 30s timeout so transient 504s don't hang the suite
-  const fetchWithRetry = (url) => withRetry(async () => {
-    const r = await fetch(url, { signal: AbortSignal.timeout(30_000) });
-    if (r.status === 404) return r; // pass 404 through — it's the expected result in one test
-    if (!r.ok) throw new Error(`Blockstream HTTP ${r.status}`);
-    return r;
-  });
+  const fetchWithRetry = (url) =>
+    withRetry(async () => {
+      const r = await fetch(url, { signal: AbortSignal.timeout(30_000) });
+      if (r.status === 404) return r; // pass 404 through — it's the expected result in one test
+      if (!r.ok) throw new Error(`Blockstream HTTP ${r.status}`);
+      return r;
+    });
 
   await test("known peg-in tx is confirmed at expected block", async () => {
     const r = await fetchWithRetry(`${BTC_API}/tx/${TESTNET_PEGIN_TX}`);
@@ -311,7 +337,9 @@ async function runBlockstreamTests() {
   await test("known peg-in tx has output to federation address", async () => {
     const r = await fetchWithRetry(`${BTC_API}/tx/${TESTNET_PEGIN_TX}`);
     const tx = await r.json();
-    const targeted = tx.vout?.some((v) => v.scriptpubkey_address === TESTNET_FED_ADDR);
+    const targeted = tx.vout?.some(
+      (v) => v.scriptpubkey_address === TESTNET_FED_ADDR,
+    );
     assert.ok(targeted, `Expected output to ${TESTNET_FED_ADDR}`);
   });
 
@@ -326,7 +354,9 @@ async function runValidationTests() {
 
   const blockstreamUp = await checkBlockstreamAvailable();
   if (!blockstreamUp) {
-    console.log("  ⚠  Blockstream API unavailable — skipping validatePeginTarget tests");
+    console.log(
+      "  ⚠  Blockstream API unavailable — skipping validatePeginTarget tests",
+    );
     return;
   }
 
@@ -344,23 +374,35 @@ async function runValidationTests() {
 
   await test("throws on tx that does not target the federation address", async () => {
     try {
-      await validatePeginTarget(TESTNET_PEGIN_TX, "2N00000000000000000000000000000000000000");
+      await validatePeginTarget(
+        TESTNET_PEGIN_TX,
+        "2N00000000000000000000000000000000000000",
+      );
       assert.fail("Expected an error");
     } catch (err) {
       assert.ok(
         err.message.includes("does not send to federation address"),
-        `Unexpected error: ${err.message}`
+        `Unexpected error: ${err.message}`,
       );
     }
   });
 
   await test("throws FatalError (not retried) on invalid tx hash", async () => {
     try {
-      await validatePeginTarget("0000000000000000000000000000000000000000000000000000000000000000", TESTNET_FED_ADDR);
+      await validatePeginTarget(
+        "0000000000000000000000000000000000000000000000000000000000000000",
+        TESTNET_FED_ADDR,
+      );
       assert.fail("Expected an error");
     } catch (err) {
-      assert.ok(err instanceof FatalError, `Expected FatalError, got ${err.constructor.name}`);
-      assert.ok(err.message.includes("not found"), `Unexpected message: ${err.message}`);
+      assert.ok(
+        err instanceof FatalError,
+        `Expected FatalError, got ${err.constructor.name}`,
+      );
+      assert.ok(
+        err.message.includes("not found"),
+        `Unexpected message: ${err.message}`,
+      );
     }
   });
 }
@@ -369,13 +411,20 @@ async function runPegoutReceiptTests() {
   section("Peg-out transaction (live RSK RPC)");
 
   await test("known peg-out tx has a valid receipt", async () => {
-    const receipt = await withRetry(() => provider.getTransactionReceipt(TESTNET_PEGOUT_TX));
+    const receipt = await withRetry(() =>
+      provider.getTransactionReceipt(TESTNET_PEGOUT_TX),
+    );
     assert.ok(receipt !== null, "Receipt should exist for a confirmed tx");
-    assert.ok(receipt.blockNumber > 0, `Expected positive blockNumber, got ${receipt.blockNumber}`);
+    assert.ok(
+      receipt.blockNumber > 0,
+      `Expected positive blockNumber, got ${receipt.blockNumber}`,
+    );
   });
 
   await test("known peg-out tx is in expected block range", async () => {
-    const receipt = await withRetry(() => provider.getTransactionReceipt(TESTNET_PEGOUT_TX));
+    const receipt = await withRetry(() =>
+      provider.getTransactionReceipt(TESTNET_PEGOUT_TX),
+    );
     // Was mined at 7,562,606 — allow some tolerance for reorg (none expected)
     assert.strictEqual(receipt.blockNumber, 7562606);
   });
@@ -397,12 +446,14 @@ async function runInputValidationTests() {
   const RSK_HASH_RE = /^0x[0-9a-fA-F]{64}$/i;
 
   await test("valid 64-char BTC tx hash passes regex", () => {
-    const hash = "a74918ced40b93d8cf9843cc952db41d233fda569ae60cee240292153a529526";
+    const hash =
+      "a74918ced40b93d8cf9843cc952db41d233fda569ae60cee240292153a529526";
     assert.ok(BTC_HASH_RE.test(hash), `Expected match for ${hash}`);
   });
 
   await test("BTC hash with 0x prefix (after strip) passes regex", () => {
-    const raw   = "0xa74918ced40b93d8cf9843cc952db41d233fda569ae60cee240292153a529526";
+    const raw =
+      "0xa74918ced40b93d8cf9843cc952db41d233fda569ae60cee240292153a529526";
     const clean = raw.replace(/^0x/i, "");
     assert.ok(BTC_HASH_RE.test(clean));
   });
@@ -417,12 +468,14 @@ async function runInputValidationTests() {
   });
 
   await test("valid RSK tx hash (0x + 64 hex) passes regex", () => {
-    const hash = "0x7695bb4c1dbaf9840d3cafb3fa539162f5f116e7d74cf25bad604a9dd4669d19";
+    const hash =
+      "0x7695bb4c1dbaf9840d3cafb3fa539162f5f116e7d74cf25bad604a9dd4669d19";
     assert.ok(RSK_HASH_RE.test(hash));
   });
 
   await test("RSK hash without 0x prefix fails regex", () => {
-    const hash = "7695bb4c1dbaf9840d3cafb3fa539162f5f116e7d74cf25bad604a9dd4669d19";
+    const hash =
+      "7695bb4c1dbaf9840d3cafb3fa539162f5f116e7d74cf25bad604a9dd4669d19";
     assert.ok(!RSK_HASH_RE.test(hash));
   });
 
@@ -433,7 +486,7 @@ async function runInputValidationTests() {
   await test("NETWORK value is valid (mainnet or testnet)", () => {
     assert.ok(
       ["mainnet", "testnet"].includes(NETWORK),
-      `NETWORK="${NETWORK}" is not valid`
+      `NETWORK="${NETWORK}" is not valid`,
     );
   });
 
@@ -445,7 +498,10 @@ async function runInputValidationTests() {
     saveState({ _atomic_test: true });
     const tmpPath = STATE_FILE + ".tmp";
     // The temp file must be cleaned up after rename
-    assert.ok(!fs.existsSync(tmpPath), ".tmp file should not persist after saveState");
+    assert.ok(
+      !fs.existsSync(tmpPath),
+      ".tmp file should not persist after saveState",
+    );
 
     if (backup !== null) {
       fs.writeFileSync(STATE_FILE, backup);
@@ -462,7 +518,7 @@ async function runAlertTests() {
     const original = process.env.TELEGRAM_BOT_TOKEN;
     delete process.env.TELEGRAM_BOT_TOKEN;
     // sendTelegram is not exported — test by checking env guard logic
-    const token  = process.env.TELEGRAM_BOT_TOKEN;
+    const token = process.env.TELEGRAM_BOT_TOKEN;
     const chatId = process.env.TELEGRAM_CHAT_ID;
     assert.ok(!token || !chatId || token === "your_bot_token");
     // Restore — must delete rather than assign undefined (which sets the string "undefined")
@@ -477,19 +533,34 @@ async function runAlertTests() {
     const url = process.env.DISCORD_WEBHOOK_URL || "";
     const shouldSkip = !url || url.includes("your_webhook");
     // If no webhook is configured the guard will short-circuit — that's correct
-    assert.ok(shouldSkip || url.startsWith("https://discord.com/api/webhooks/"));
+    assert.ok(
+      shouldSkip || url.startsWith("https://discord.com/api/webhooks/"),
+    );
   });
 
-  if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_BOT_TOKEN !== "your_bot_token") {
+  if (
+    process.env.TELEGRAM_BOT_TOKEN &&
+    process.env.TELEGRAM_BOT_TOKEN !== "your_bot_token"
+  ) {
     await test("Telegram: can reach API endpoint", async () => {
-      const fetch = globalThis.fetch ?? require("node-fetch").default ?? require("node-fetch");
-      const token  = process.env.TELEGRAM_BOT_TOKEN;
+      const fetch =
+        globalThis.fetch ??
+        require("node-fetch").default ??
+        require("node-fetch");
+      const token = process.env.TELEGRAM_BOT_TOKEN;
       const chatId = process.env.TELEGRAM_CHAT_ID;
-      const res  = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: chatId, text: "🧪 PowPeg monitor test — JS", parse_mode: "Markdown" }),
-      });
+      const res = await fetch(
+        `https://api.telegram.org/bot${token}/sendMessage`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chat_id: chatId,
+            text: "🧪 PowPeg monitor test — JS",
+            parse_mode: "Markdown",
+          }),
+        },
+      );
       const json = await res.json();
       // 400/403 = config error (wrong chat_id, bot blocked, etc.) — the token
       // itself is valid, so skip rather than fail so a bad TELEGRAM_CHAT_ID
@@ -497,7 +568,9 @@ async function runAlertTests() {
       if (!json.ok && (res.status === 400 || res.status === 403)) {
         const desc = json.description || "";
         if (/chat not found|bot was blocked|Forbidden|not found/i.test(desc)) {
-          console.log(`  ⚠  Telegram config error (token OK, chat_id wrong or bot not started): ${desc}`);
+          console.log(
+            `  ⚠  Telegram config error (token OK, chat_id wrong or bot not started): ${desc}`,
+          );
           skipped++;
           return;
         }
@@ -506,31 +579,44 @@ async function runAlertTests() {
     });
   }
 
-  if (process.env.DISCORD_WEBHOOK_URL && !process.env.DISCORD_WEBHOOK_URL.includes("your_webhook")) {
+  if (
+    process.env.DISCORD_WEBHOOK_URL &&
+    !process.env.DISCORD_WEBHOOK_URL.includes("your_webhook")
+  ) {
     await test("Discord: webhook delivers successfully", async () => {
-      const fetch = globalThis.fetch ?? require("node-fetch").default ?? require("node-fetch");
+      const fetch =
+        globalThis.fetch ??
+        require("node-fetch").default ??
+        require("node-fetch");
       const res = await fetch(process.env.DISCORD_WEBHOOK_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content: "🧪 PowPeg monitor test — JS" }),
       });
-      assert.ok(res.status === 204 || res.status === 200, `Discord returned ${res.status}`);
+      assert.ok(
+        res.status === 204 || res.status === 200,
+        `Discord returned ${res.status}`,
+      );
     });
   }
 }
 
-// ── Runner ─────────────────────────────────────────────────────────────────────
+// -- Runner --
 
 async function main() {
   console.log("\n╔════════════════════════════════════════════╗");
   console.log(`║  PowPeg Monitor — Test Suite (JavaScript)  ║`);
   console.log("╚════════════════════════════════════════════╝");
-  console.log(`  Network: ${NETWORK} | RPC: ${process.env.RSK_RPC_URL?.slice(0, 40)}...`);
+  console.log(
+    `  Network: ${NETWORK} | RPC: ${process.env.RSK_RPC_URL?.slice(0, 40)}...`,
+  );
 
   // Pre-warm the Blockstream availability cache before any test section runs
   const blockstreamUp = await checkBlockstreamAvailable();
   if (!blockstreamUp) {
-    console.log("  ⚠  Blockstream API unavailable — Blockstream and validation tests will be skipped");
+    console.log(
+      "  ⚠  Blockstream API unavailable — Blockstream and validation tests will be skipped",
+    );
   }
 
   await runUtilityTests();
@@ -545,10 +631,14 @@ async function main() {
 
   console.log(`\n${"─".repeat(52)}`);
   const skippedNote = skipped > 0 ? `  ${skipped} skipped (external API)` : "";
-  console.log(`  ${passed} passed  ${failed > 0 ? failed + " failed" : ""}${skippedNote}`);
+  console.log(
+    `  ${passed} passed  ${failed > 0 ? failed + " failed" : ""}${skippedNote}`,
+  );
 
   if (failed > 0) {
-    console.log(`\n  Some tests failed. Check your .env and network connectivity.\n`);
+    console.log(
+      `\n  Some tests failed. Check your .env and network connectivity.\n`,
+    );
     process.exit(1);
   } else {
     console.log(`\n  All tests passed.\n`);

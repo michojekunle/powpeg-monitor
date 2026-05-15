@@ -1,6 +1,6 @@
 # PowPeg Monitor
 
-Real-time confirmation tracker for the Rootstock PowPeg bridge. Monitors peg-in (BTC → rBTC) and peg-out (rBTC → BTC) transactions, counts confirmations, estimates time remaining, and fires Telegram or Discord alerts when funds land.
+Near real-time, polling-based confirmation tracker for the Rootstock PowPeg bridge. Monitors peg-in (BTC → rBTC) and peg-out (rBTC → BTC) transactions, counts confirmations, estimates time remaining, and fires Telegram or Discord alerts when funds land. Polls every 60 seconds.
 
 No backend server required. Runs from a single script in JavaScript or Python.
 
@@ -8,10 +8,10 @@ No backend server required. Runs from a single script in JavaScript or Python.
 
 ## What it tracks
 
-| Direction | Confirmations required | Mainnet estimate | Testnet estimate |
-|-----------|----------------------|-----------------|-----------------|
-| Peg-in (BTC → rBTC) | 100 BTC blocks | ~17 hours | ~100 min |
-| Peg-out (rBTC → BTC) | 4,000 RSK blocks | ~34 hours | ~5 min |
+| Direction            | Confirmations required | Mainnet estimate | Testnet estimate |
+| -------------------- | ---------------------- | ---------------- | ---------------- |
+| Peg-in (BTC → rBTC)  | 100 BTC blocks         | ~17 hours        | ~100 min         |
+| Peg-out (rBTC → BTC) | 4,000 RSK blocks       | ~34 hours        | ~5 min           |
 
 ---
 
@@ -33,11 +33,13 @@ cp .env.example .env
 ```
 
 **JavaScript:**
+
 ```bash
 npm install
 ```
 
 **Python:**
+
 ```bash
 # Install into the same Python you will run the script with.
 # IMPORTANT: use "python3.x -m pip" not a bare "pip3" — on macOS the two
@@ -46,11 +48,13 @@ python3 -m pip install web3 python-dotenv requests
 ```
 
 > **Python version note:** Python 3.10–3.13 recommended. If you're on macOS with Homebrew Python 3.14 and see a `pyexpat` / `libexpat` error during install, install a supported version first:
+>
 > ```bash
 > brew install python@3.12
 > python3.12 -m pip install web3 python-dotenv requests
 > python3.12 monitor.py pegin ...
 > ```
+>
 > `./test.sh` detects and uses a working Python automatically.
 
 ---
@@ -96,15 +100,16 @@ python3 monitor.py pegout <rskTxHash>
 
 These confirmed testnet transactions let you verify the monitor immediately — no BTC or rBTC required.
 
-| Field | Value |
-|-------|-------|
-| BTC peg-in tx | `a74918ced40b93d8cf9843cc952db41d233fda569ae60cee240292153a529526` |
-| BTC testnet block | 4,918,812 |
-| RSK peg-out tx | `0x7695bb4c1dbaf9840d3cafb3fa539162f5f116e7d74cf25bad604a9dd4669d19` |
-| RSK testnet block | 7,562,606 |
-| RSK address (placeholder — use your own to receive rBTC) | `0x742d35Cc6634C0553241234561234561234567890` |
+| Field                                                    | Value                                                                |
+| -------------------------------------------------------- | -------------------------------------------------------------------- |
+| BTC peg-in tx                                            | `a74918ced40b93d8cf9843cc952db41d233fda569ae60cee240292153a529526`   |
+| BTC testnet block                                        | 4,918,812                                                            |
+| RSK peg-out tx                                           | `0x7695bb4c1dbaf9840d3cafb3fa539162f5f116e7d74cf25bad604a9dd4669d19` |
+| RSK testnet block                                        | 7,562,606                                                            |
+| RSK address (placeholder — use your own to receive rBTC) | `0x742d35Cc6634C0553241234561234561234567890`                        |
 
 **JavaScript:**
+
 ```bash
 # Peg-in (BTC → rBTC)
 node monitor.js pegin \
@@ -117,6 +122,7 @@ node monitor.js pegout \
 ```
 
 **Python:**
+
 ```bash
 # Peg-in (BTC → rBTC)
 python3 monitor.py pegin \
@@ -176,6 +182,7 @@ chmod +x test.sh   # first time only
 The script auto-detects a working Python 3.10–3.13 and installs packages into **that exact interpreter** (using `$PYTHON -m pip`), avoiding the macOS pip-mismatch issue that was breaking installs.
 
 Options:
+
 ```bash
 ./test.sh --js-only    # JavaScript tests only
 ./test.sh --py-only    # Python tests only
@@ -186,6 +193,7 @@ Options:
 ```
 
 Or run the language-specific suites directly:
+
 ```bash
 node test.js       # JS: utilities, state, retry, Bridge, Blockstream, alerts
 python3 test.py    # Python: equivalent coverage
@@ -198,12 +206,14 @@ All tests use real confirmed testnet transactions as fixtures and hit the live B
 ## Alert setup
 
 ### Telegram
+
 1. Open Telegram → search `@BotFather` → `/newbot` → copy the bot token
 2. Start a chat with your bot, then visit `https://api.telegram.org/bot<TOKEN>/getUpdates`
 3. Send your bot a message, find `"chat": {"id": ...}` in the JSON — that's your chat ID
 4. Add both to `.env`
 
 ### Discord
+
 1. Server Settings → Integrations → Webhooks → New Webhook → copy the URL
 2. Add `DISCORD_WEBHOOK_URL` to `.env`
 

@@ -13,7 +13,7 @@
 
 set -euo pipefail
 
-# ── Colours ────────────────────────────────────────────────────────────────────
+# -- Colours --
 RED="\033[0;31m"; GREEN="\033[0;32m"; YELLOW="\033[1;33m"
 CYAN="\033[0;36m"; BOLD="\033[1m"; RESET="\033[0m"
 
@@ -27,7 +27,7 @@ FAILURES=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# ── Portable timeout ──────────────────────────────────────────────────────────
+# -- Portable timeout --
 # macOS does not ship GNU timeout. Prefer gtimeout (brew install coreutils),
 # then GNU timeout, then a pure-bash fallback using background process + kill.
 if command -v gtimeout &>/dev/null; then
@@ -47,12 +47,12 @@ else
   }
 fi
 
-# ── Real testnet values ────────────────────────────────────────────────────────
+# -- Real testnet values --
 PEGIN_TX="a74918ced40b93d8cf9843cc952db41d233fda569ae60cee240292153a529526"
 PEGOUT_TX="0x7695bb4c1dbaf9840d3cafb3fa539162f5f116e7d74cf25bad604a9dd4669d19"
 DUMMY_RSK_ADDR="0x742d35Cc6634C0553241234561234561234567890"
 
-# ── Args ───────────────────────────────────────────────────────────────────────
+# -- Args --
 RUN_JS=true; RUN_PY=true; RUN_SMOKE=true; RUN_ALERTS=true
 
 for arg in "$@"; do
@@ -73,7 +73,7 @@ echo -e "${BOLD}╔════════════════════�
 echo -e "${BOLD}║     PowPeg Monitor — End-to-End Tests      ║${RESET}"
 echo -e "${BOLD}╚════════════════════════════════════════════╝${RESET}"
 
-# ── .env check ─────────────────────────────────────────────────────────────────
+# -- .env check --
 section "Environment"
 
 if [ ! -f ".env" ]; then
@@ -94,7 +94,7 @@ fi
 pass ".env loaded (NETWORK=$NETWORK)"
 info "RPC: ${RSK_RPC_URL:0:45}..."
 
-# ── Node.js check ──────────────────────────────────────────────────────────────
+# -- Node.js check --
 section "Node.js"
 
 if ! command -v node &>/dev/null; then
@@ -110,14 +110,14 @@ if [ "$NODE_MAJOR" -lt 18 ]; then
 fi
 pass "Node.js v$NODE_VER"
 
-# ── npm install ────────────────────────────────────────────────────────────────
+# -- npm install --
 if [ ! -d "node_modules" ]; then
   info "node_modules not found — running npm install..."
   npm install --silent
 fi
 pass "npm packages installed"
 
-# ── Python check ───────────────────────────────────────────────────────────────
+# -- Python check --
 section "Python"
 
 # Find a working Python 3.10+ with a functional pyexpat (3.14 is broken on macOS)
@@ -164,7 +164,7 @@ else
   pass "Python $PY_VER ($PYTHON)"
 fi
 
-# ── pip install ────────────────────────────────────────────────────────────────
+# -- pip install --
 if [ "$RUN_PY" = true ]; then
   # Always use '$PYTHON -m pip' so packages install into exactly the Python
   # interpreter that was selected above — never an independently-found pip3
@@ -206,7 +206,7 @@ if [ "$RUN_PY" = true ]; then
   fi
 fi
 
-# ── JavaScript tests ───────────────────────────────────────────────────────────
+# -- JavaScript tests --
 if [ "$RUN_JS" = true ]; then
   section "JavaScript test suite"
   if node test.js; then
@@ -216,7 +216,7 @@ if [ "$RUN_JS" = true ]; then
   fi
 fi
 
-# ── Python tests ───────────────────────────────────────────────────────────────
+# -- Python tests --
 if [ "$RUN_PY" = true ]; then
   section "Python test suite"
   if "$PYTHON" test.py; then
@@ -226,7 +226,7 @@ if [ "$RUN_PY" = true ]; then
   fi
 fi
 
-# ── Smoke tests: live monitor output ──────────────────────────────────────────
+# -- Smoke tests: live monitor output --
 if [ "$RUN_SMOKE" = true ]; then
   section "Smoke tests (live monitor output)"
 
@@ -289,7 +289,7 @@ if [ "$RUN_SMOKE" = true ]; then
   fi
 fi
 
-# ── Alert endpoint tests ───────────────────────────────────────────────────────
+# -- Alert endpoint tests --
 if [ "$RUN_ALERTS" = true ]; then
   section "Alert endpoints"
 
@@ -334,7 +334,7 @@ if [ "$RUN_ALERTS" = true ]; then
   fi
 fi
 
-# ── Summary ────────────────────────────────────────────────────────────────────
+# -- Summary --
 echo ""
 echo -e "${BOLD}$(printf '%.0s─' $(seq 1 52))${RESET}"
 

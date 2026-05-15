@@ -1,12 +1,13 @@
 "use strict";
 
 const { ethers } = require("ethers");
-const fs   = require("fs");
+const fs = require("fs");
 const path = require("path");
 require("dotenv").config();
 
 // Node 18+ has fetch built-in; fall back to node-fetch for older runtimes
-const _nf   = typeof globalThis.fetch === "undefined" ? require("node-fetch") : null;
+const _nf =
+  typeof globalThis.fetch === "undefined" ? require("node-fetch") : null;
 const fetch = globalThis.fetch ?? _nf.default ?? _nf;
 
 // Errors that should never be retried (bad tx hash, wrong network, etc.)
@@ -17,18 +18,19 @@ class FatalError extends Error {
   }
 }
 
-// ── Config ─────────────────────────────────────────────────────────────────────
+// -- Config --
 
-const RSK_RPC_URL    = process.env.RSK_RPC_URL;
-const BRIDGE_ADDRESS = process.env.BRIDGE_ADDRESS || "0x0000000000000000000000000000000001000006";
-const NETWORK        = process.env.NETWORK || "testnet";
-const POLL_INTERVAL  = 60_000;
-const STATE_FILE     = path.join(__dirname, "monitor-state.json");
+const RSK_RPC_URL = process.env.RSK_RPC_URL;
+const BRIDGE_ADDRESS =
+  process.env.BRIDGE_ADDRESS || "0x0000000000000000000000000000000001000006";
+const NETWORK = process.env.NETWORK || "testnet";
+const POLL_INTERVAL = 60_000;
+const STATE_FILE = path.join(__dirname, "monitor-state.json");
 
-const PEGIN_REQUIRED  = NETWORK === "mainnet" ? 100 : 10;
+const PEGIN_REQUIRED = NETWORK === "mainnet" ? 100 : 10;
 const PEGOUT_REQUIRED = NETWORK === "mainnet" ? 4000 : 10;
-const BTC_BLOCK_TIME  = 600;
-const RSK_BLOCK_TIME  = 30;
+const BTC_BLOCK_TIME = 600;
+const RSK_BLOCK_TIME = 30;
 
 const BTC_API =
   NETWORK === "mainnet"
@@ -41,21 +43,27 @@ if (!RSK_RPC_URL) {
 }
 
 if (!["mainnet", "testnet"].includes(NETWORK)) {
-  console.error(`Error: NETWORK="${NETWORK}" is invalid — must be "mainnet" or "testnet" in .env`);
+  console.error(
+    `Error: NETWORK="${NETWORK}" is invalid — must be "mainnet" or "testnet" in .env`,
+  );
   process.exit(1);
 }
 
 let BRIDGE_ABI;
 try {
-  BRIDGE_ABI = JSON.parse(fs.readFileSync(path.join(__dirname, "bridge-abi.json"), "utf8"));
+  BRIDGE_ABI = JSON.parse(
+    fs.readFileSync(path.join(__dirname, "bridge-abi.json"), "utf8"),
+  );
 } catch {
-  console.error("Error: bridge-abi.json not found. Run: git checkout bridge-abi.json");
+  console.error(
+    "Error: bridge-abi.json not found. Run: git checkout bridge-abi.json",
+  );
   process.exit(1);
 }
-const provider   = new ethers.JsonRpcProvider(RSK_RPC_URL);
-const bridge     = new ethers.Contract(BRIDGE_ADDRESS, BRIDGE_ABI, provider);
+const provider = new ethers.JsonRpcProvider(RSK_RPC_URL);
+const bridge = new ethers.Contract(BRIDGE_ADDRESS, BRIDGE_ABI, provider);
 
-// ── State persistence ──────────────────────────────────────────────────────────
+// -- State persistence --
 
 function loadState() {
   try {
@@ -63,7 +71,9 @@ function loadState() {
       ? JSON.parse(fs.readFileSync(STATE_FILE, "utf8"))
       : {};
   } catch (err) {
-    console.warn(`  Warning: could not read state file, starting fresh. (${err.message})`);
+    console.warn(
+      `  Warning: could not read state file, starting fresh. (${err.message})`,
+    );
     return {};
   }
 }
@@ -76,10 +86,10 @@ function saveState(state) {
   fs.renameSync(tmp, STATE_FILE);
 }
 
-// ── Utilities ──────────────────────────────────────────────────────────────────
+// -- Utilities --
 
 function secondsToHuman(seconds) {
-  if (seconds < 60)   return `${Math.round(seconds)}s`;
+  if (seconds < 60) return `${Math.round(seconds)}s`;
   if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
   const h = Math.floor(seconds / 3600);
   const m = Math.round((seconds % 3600) / 60);
@@ -95,21 +105,27 @@ function printStatus(label, data) {
   for (const [k, v] of Object.entries(data)) {
     console.log(`  ${k.padEnd(18)}: ${v}`);
   }
-  console.log(`\n  ${"Updated".padEnd(18)}: ${new Date().toLocaleTimeString()}`);
+  console.log(
+    `\n  ${"Updated".padEnd(18)}: ${new Date().toLocaleTimeString()}`,
+  );
   console.log("  Press Ctrl+C to stop.\n");
 }
 
-// ── Alerts ─────────────────────────────────────────────────────────────────────
+// -- Alerts --
 
 async function sendTelegram(message) {
-  const token  = process.env.TELEGRAM_BOT_TOKEN;
+  const token = process.env.TELEGRAM_BOT_TOKEN;
   const chatId = process.env.TELEGRAM_CHAT_ID;
   if (!token || !chatId || token === "your_bot_token") return;
   try {
     await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text: message, parse_mode: "Markdown" }),
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: message,
+        parse_mode: "Markdown",
+      }),
     });
   } catch (err) {
     console.error("Telegram alert failed:", err.message);
@@ -135,7 +151,7 @@ async function sendAlert(message) {
   await Promise.all([sendTelegram(message), sendDiscord(message)]);
 }
 
-// ── Retry wrapper ──────────────────────────────────────────────────────────────
+// -- Retry wrapper --
 
 async function withRetry(fn, maxRetries = 3) {
   for (let i = 0; i < maxRetries; i++) {
@@ -144,20 +160,24 @@ async function withRetry(fn, maxRetries = 3) {
     } catch (err) {
       if (err instanceof FatalError || i === maxRetries - 1) throw err;
       const delay = 2000 * Math.pow(2, i);
-      console.warn(`  [attempt ${i + 1}/${maxRetries} failed] ${err.message} — retrying in ${delay / 1000}s`);
+      console.warn(
+        `  [attempt ${i + 1}/${maxRetries} failed] ${err.message} — retrying in ${delay / 1000}s`,
+      );
       await new Promise((r) => setTimeout(r, delay));
     }
   }
 }
 
-// ── Peg-In Monitor ─────────────────────────────────────────────────────────────
+// -- Peg-In Monitor --
 
 async function validatePeginTarget(btcTxHash, expectedFedAddress) {
   // Treat 5xx as transient (retry); treat 404 as definitive bad hash (throw immediately).
   const res = await withRetry(async () => {
     const r = await fetch(`${BTC_API}/tx/${btcTxHash}`);
     if (r.status === 404) {
-      throw new FatalError(`Tx ${btcTxHash} not found on ${NETWORK}. Check the hash.`);
+      throw new FatalError(
+        `Tx ${btcTxHash} not found on ${NETWORK}. Check the hash.`,
+      );
     }
     if (!r.ok) throw new Error(`Blockstream HTTP ${r.status}`);
     return r;
@@ -167,11 +187,13 @@ async function validatePeginTarget(btcTxHash, expectedFedAddress) {
   if (!tx?.vout?.length) {
     throw new Error(`Could not fetch outputs for tx ${btcTxHash}.`);
   }
-  const targeted = tx.vout.some((v) => v.scriptpubkey_address === expectedFedAddress);
+  const targeted = tx.vout.some(
+    (v) => v.scriptpubkey_address === expectedFedAddress,
+  );
   if (!targeted) {
     throw new Error(
       `Tx ${btcTxHash} does not send to federation address ${expectedFedAddress}.\n` +
-      `The PowPeg composition may have changed. Check powpeg.rootstock.io for the current address.`
+        `The PowPeg composition may have changed. Check powpeg.rootstock.io for the current address.`,
     );
   }
 }
@@ -187,7 +209,9 @@ async function monitorPegin(btcTxHash, rskAddress) {
   let alertedComplete = state[`${btcTxHash}_complete`] || false;
 
   console.log(`\n  Starting peg-in monitor for ${btcTxHash.slice(0, 20)}...`);
-  console.log(`  Network: ${NETWORK} | Required confirmations: ${PEGIN_REQUIRED}`);
+  console.log(
+    `  Network: ${NETWORK} | Required confirmations: ${PEGIN_REQUIRED}`,
+  );
 
   // Validate tx actually targets the current federation address before polling
   console.log(`  Validating tx targets current federation address...`);
@@ -208,32 +232,36 @@ async function monitorPegin(btcTxHash, rskAddress) {
 
       if (!txData?.status?.confirmed) {
         printStatus("PEG-IN (BTC → rBTC)", {
-          "BTC Tx Hash"      : `${btcTxHash.slice(0, 20)}...`,
-          "RSK Address"      : `${rskAddress.slice(0, 20)}...`,
+          "BTC Tx Hash": `${btcTxHash.slice(0, 20)}...`,
+          "RSK Address": `${rskAddress.slice(0, 20)}...`,
           "Bridge BTC Height": String(bridgeBtcHeight),
-          "BTC Status"       : "Unconfirmed (mempool)",
-          "Confirmations"    : `0 / ${PEGIN_REQUIRED}`,
-          "ETA"              : secondsToHuman(PEGIN_REQUIRED * BTC_BLOCK_TIME),
+          "BTC Status": "Unconfirmed (mempool)",
+          Confirmations: `0 / ${PEGIN_REQUIRED}`,
+          ETA: secondsToHuman(PEGIN_REQUIRED * BTC_BLOCK_TIME),
         });
         return;
       }
 
-      const txBlockHeight    = txData.status.block_height;
+      const txBlockHeight = txData.status.block_height;
       // Clamp to 0: Bridge SPV view can temporarily lag behind the BTC tx block
-      const btcConfirmations = Math.max(0, Number(bridgeBtcHeight) - txBlockHeight + 1);
-      const remaining        = Math.max(0, PEGIN_REQUIRED - btcConfirmations);
-      const complete         = btcConfirmations >= PEGIN_REQUIRED;
+      const btcConfirmations = Math.max(
+        0,
+        Number(bridgeBtcHeight) - txBlockHeight + 1,
+      );
+      const remaining = Math.max(0, PEGIN_REQUIRED - btcConfirmations);
+      const complete = btcConfirmations >= PEGIN_REQUIRED;
 
       printStatus("PEG-IN (BTC → rBTC)", {
-        "BTC Tx Hash"      : `${btcTxHash.slice(0, 20)}...`,
-        "RSK Address"      : `${rskAddress.slice(0, 20)}...`,
-        "BTC Tx Block"     : String(txBlockHeight),
+        "BTC Tx Hash": `${btcTxHash.slice(0, 20)}...`,
+        "RSK Address": `${rskAddress.slice(0, 20)}...`,
+        "BTC Tx Block": String(txBlockHeight),
         "Bridge BTC Height": String(bridgeBtcHeight),
-        "Confirmations"    : `${btcConfirmations} / ${PEGIN_REQUIRED}`,
-        "Status"           : complete
+        Confirmations: `${btcConfirmations} / ${PEGIN_REQUIRED}`,
+        Status: complete
           ? "✓ COMPLETE — rBTC credited"
           : `Waiting (${btcConfirmations}/${PEGIN_REQUIRED} BTC blocks)`,
-        "ETA"              : remaining > 0 ? secondsToHuman(remaining * BTC_BLOCK_TIME) : "Done",
+        ETA:
+          remaining > 0 ? secondsToHuman(remaining * BTC_BLOCK_TIME) : "Done",
       });
 
       // Single merged write — prevents a kill-between-writes leaving _complete unset
@@ -245,7 +273,7 @@ async function monitorPegin(btcTxHash, rskAddress) {
       if (complete && !alertedComplete) {
         alertedComplete = true;
         await sendAlert(
-          `✅ *PowPeg Peg-In Complete*\nBTC Tx: \`${btcTxHash}\`\nrBTC credited to: \`${rskAddress}\`\nNetwork: ${NETWORK}`
+          `✅ *PowPeg Peg-In Complete*\nBTC Tx: \`${btcTxHash}\`\nrBTC credited to: \`${rskAddress}\`\nNetwork: ${NETWORK}`,
         );
       }
     } catch (err) {
@@ -267,15 +295,17 @@ async function monitorPegin(btcTxHash, rskAddress) {
   });
 }
 
-// ── Peg-Out Monitor ────────────────────────────────────────────────────────────
+// -- Peg-Out Monitor --
 
 async function monitorPegout(rskTxHash) {
   const state = loadState();
-  let alertedQueued   = state[`${rskTxHash}_queued`]   || false;
-  let alertedComplete = state[`${rskTxHash}_complete`]  || false;
+  let alertedQueued = state[`${rskTxHash}_queued`] || false;
+  let alertedComplete = state[`${rskTxHash}_complete`] || false;
 
   console.log(`\n  Starting peg-out monitor for ${rskTxHash.slice(0, 22)}...`);
-  console.log(`  Network: ${NETWORK} | Required confirmations: ${PEGOUT_REQUIRED}\n`);
+  console.log(
+    `  Network: ${NETWORK} | Required confirmations: ${PEGOUT_REQUIRED}\n`,
+  );
 
   async function poll() {
     try {
@@ -286,18 +316,18 @@ async function monitorPegout(rskTxHash) {
 
       if (!receipt) {
         printStatus("PEG-OUT (rBTC → BTC)", {
-          "RSK Tx Hash"   : `${rskTxHash.slice(0, 22)}...`,
-          "Current Block" : String(currentBlock),
-          "Status"        : "Pending — not yet mined",
-          "Confirmations" : `0 / ${PEGOUT_REQUIRED}`,
+          "RSK Tx Hash": `${rskTxHash.slice(0, 22)}...`,
+          "Current Block": String(currentBlock),
+          Status: "Pending — not yet mined",
+          Confirmations: `0 / ${PEGOUT_REQUIRED}`,
         });
         return;
       }
 
-      const txBlock      = receipt.blockNumber;
-      const rskConfirms  = currentBlock - txBlock;
-      const remaining    = Math.max(0, PEGOUT_REQUIRED - rskConfirms);
-      const complete     = rskConfirms >= PEGOUT_REQUIRED;
+      const txBlock = receipt.blockNumber;
+      const rskConfirms = currentBlock - txBlock;
+      const remaining = Math.max(0, PEGOUT_REQUIRED - rskConfirms);
+      const complete = rskConfirms >= PEGOUT_REQUIRED;
 
       const [queuedCount, nextBatchBlock] = await Promise.all([
         withRetry(() => bridge.getQueuedPegoutsCount()),
@@ -311,37 +341,39 @@ async function monitorPegout(rskTxHash) {
       const status = complete
         ? "✓ COMPLETE — BTC broadcast"
         : rskConfirms >= 10
-        ? `Processing (${rskConfirms}/${PEGOUT_REQUIRED} RSK blocks)`
-        : "Queued — awaiting minimum confirmations";
+          ? `Processing (${rskConfirms}/${PEGOUT_REQUIRED} RSK blocks)`
+          : "Queued — awaiting minimum confirmations";
 
       printStatus("PEG-OUT (rBTC → BTC)", {
-        "RSK Tx Hash"   : `${rskTxHash.slice(0, 22)}...`,
-        "Tx Block"      : String(txBlock),
-        "Current Block" : String(currentBlock),
-        "Confirmations" : `${rskConfirms} / ${PEGOUT_REQUIRED}`,
-        "Queue Size"    : `${queuedCount} pending pegout(s)`,
-        "Next Batch"    : blocksToNext > 0 ? `${blocksToNext} blocks` : "Imminent",
-        "Status"        : status,
-        "ETA"           : remaining > 0 ? secondsToHuman(remaining * RSK_BLOCK_TIME) : "Done",
+        "RSK Tx Hash": `${rskTxHash.slice(0, 22)}...`,
+        "Tx Block": String(txBlock),
+        "Current Block": String(currentBlock),
+        Confirmations: `${rskConfirms} / ${PEGOUT_REQUIRED}`,
+        "Queue Size": `${queuedCount} pending pegout(s)`,
+        "Next Batch": blocksToNext > 0 ? `${blocksToNext} blocks` : "Imminent",
+        Status: status,
+        ETA:
+          remaining > 0 ? secondsToHuman(remaining * RSK_BLOCK_TIME) : "Done",
       });
 
       // Single merged write per cycle — prevents duplicate alerts on restart.
       const updates = { [`${rskTxHash}_confirms`]: rskConfirms };
-      if (rskConfirms >= 10 && !alertedQueued) updates[`${rskTxHash}_queued`] = true;
-      if (complete && !alertedComplete)         updates[`${rskTxHash}_complete`] = true;
+      if (rskConfirms >= 10 && !alertedQueued)
+        updates[`${rskTxHash}_queued`] = true;
+      if (complete && !alertedComplete) updates[`${rskTxHash}_complete`] = true;
       saveState({ ...loadState(), ...updates });
 
       if (rskConfirms >= 10 && !alertedQueued) {
         alertedQueued = true;
         await sendAlert(
-          `🔄 *PowPeg Peg-Out Queued*\nRSK Tx: \`${rskTxHash}\`\n${rskConfirms} RSK confirmations so far.\nNetwork: ${NETWORK}`
+          `🔄 *PowPeg Peg-Out Queued*\nRSK Tx: \`${rskTxHash}\`\n${rskConfirms} RSK confirmations so far.\nNetwork: ${NETWORK}`,
         );
       }
 
       if (complete && !alertedComplete) {
         alertedComplete = true;
         await sendAlert(
-          `✅ *PowPeg Peg-Out Complete*\nRSK Tx: \`${rskTxHash}\`\n${PEGOUT_REQUIRED} RSK confirmations reached. BTC broadcast.\nNetwork: ${NETWORK}`
+          `✅ *PowPeg Peg-Out Complete*\nRSK Tx: \`${rskTxHash}\`\n${PEGOUT_REQUIRED} RSK confirmations reached. BTC broadcast.\nNetwork: ${NETWORK}`,
         );
       }
     } catch (err) {
@@ -363,7 +395,7 @@ async function monitorPegout(rskTxHash) {
   });
 }
 
-// ── Entry point ────────────────────────────────────────────────────────────────
+// -- Entry point --
 
 const BTC_HASH_RE = /^[0-9a-fA-F]{64}$/;
 const RSK_HASH_RE = /^0x[0-9a-fA-F]{64}$/i;
@@ -394,12 +426,16 @@ if (require.main === module) {
       process.exit(1);
     }
     if (!RSK_HASH_RE.test(txHash)) {
-      console.error("Error: RSK tx hash must be 0x followed by 64 hex characters.");
+      console.error(
+        "Error: RSK tx hash must be 0x followed by 64 hex characters.",
+      );
       process.exit(1);
     }
     monitorPegout(txHash).catch(fatalHandler);
   } else {
-    console.error("Usage: node monitor.js [pegin|pegout] <txHash> [rskAddress]");
+    console.error(
+      "Usage: node monitor.js [pegin|pegout] <txHash> [rskAddress]",
+    );
     process.exit(1);
   }
 }

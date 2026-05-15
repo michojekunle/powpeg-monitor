@@ -1,16 +1,17 @@
-# Monitor the Rootstock PowPeg Bridge: Track Peg-Ins and Peg-Outs in Real Time
+# Monitor the Rootstock PowPeg Bridge: Track Peg-Ins and Peg-Outs in Near Real-Time
 
-Hi builders, welcome to this step-by-step tutorial where we'll learn how to build a real-time PowPeg bridge monitor that tracks BTC↔rBTC transfers as they confirm — block by block.
+Hi builders, welcome to this step-by-step tutorial where we'll learn how to build a polling-based PowPeg bridge monitor that tracks BTC↔rBTC transfers as they confirm — block by block.
 
 By the end of this tutorial, you'll have a **working monitor** that:
-- Displays live confirmation counts and ETAs for both peg-ins and peg-outs
+
+- Displays near real-time confirmation counts and ETAs for both peg-ins and peg-outs (polling every 60 seconds)
 - Fires **Telegram and Discord alerts** the moment your transfer completes
 - Persists alert state across restarts so you never get a duplicate notification
 - Validates every input up front and handles transient RPC errors with automatic retries
 
 The complete code is on GitHub: [github.com/michojekunle/powpeg-monitor](https://github.com/michojekunle/powpeg-monitor)
 
-✨ Let's dive in and see how Rootstock's PowPeg enables trust-minimized Bitcoin bridging — and how to watch it in real time.
+Let's dive in and see how Rootstock's PowPeg enables decentralized Bitcoin bridging — and how to watch it in near real-time.
 
 ---
 
@@ -26,22 +27,29 @@ This is not a regular deployed contract — it's a **precompile**, native code t
 
 Key properties of the PowPeg:
 
-- ✅ **Trust-minimized** — No single custodian holds your BTC. The federation is a set of PowHSM hardware devices whose keys cannot be extracted, even by operators.
-- ✅ **Bitcoin-secured** — Rootstock uses merged mining, anchoring its security to Bitcoin's proof-of-work hash rate.
-- ✅ **SPV-verified** — The Bridge maintains its own internal chain of Bitcoin block headers. It does not trust external oracles or APIs — it verifies Bitcoin itself.
-- ✅ **Fully on-chain** — All state (confirmation counts, queue depth, next batch block) is readable from the Bridge contract in real time.
+- **Trust-minimized** — No single custodian holds your BTC. The federation is a set of PowHSM hardware devices whose keys cannot be extracted, even by operators.
+- **Merged-mined** — Rootstock blocks are produced by Bitcoin miners alongside Bitcoin blocks, sharing hash rate. This integrates Rootstock into the Bitcoin mining ecosystem, though Rootstock maintains its own consensus rules and security model distinct from Bitcoin's.
+- **SPV-verified** — The Bridge maintains its own internal chain of Bitcoin block headers. It does not trust external oracles or APIs — it verifies Bitcoin block headers itself.
+- **Fully on-chain** — All state (confirmation counts, queue depth, next batch block) is readable from the Bridge contract at any time.
 
 ---
 
 ## Why Build a Bridge Monitor?
 
-The PowPeg is deliberately slow. A native peg-in requires **100 Bitcoin confirmations (~17 hours)**. A native peg-out waits for **4,000 Rootstock block confirmations (~34 hours)**. During that window, there's no native tooling to watch progress — no block explorer gives you a confirmation countdown, and no protocol-level notification fires when funds land.
+The PowPeg is deliberately slow:
+
+| Direction            | Mainnet confirmations | Mainnet estimate | Testnet confirmations | Testnet estimate |
+| -------------------- | --------------------- | ---------------- | --------------------- | ---------------- |
+| Peg-in (BTC → rBTC)  | 100 BTC blocks        | ~17 hours        | 10 BTC blocks         | ~100 min         |
+| Peg-out (rBTC → BTC) | 4,000 RSK blocks      | ~34 hours        | 10 RSK blocks         | ~5 min           |
+
+During that window, there's no native tooling to watch progress — no block explorer gives you a confirmation countdown, and no protocol-level notification fires when funds land.
 
 A monitor solves three real problems:
 
-- 🔹 **Visibility** — Know exactly where your transfer is, not just "pending" or "complete."
-- 🔹 **Peace of mind** — Get alerted the moment funds arrive rather than checking manually every few hours.
-- 🔹 **Developer tooling** — When building dApps on Rootstock, you need to programmatically track bridge state. This monitor is a working reference for exactly that.
+- **Visibility** — Know exactly where your transfer is, not just "pending" or "complete."
+- **Peace of mind** — Get alerted the moment funds arrive rather than checking manually every few hours.
+- **Developer tooling** — When building dApps on Rootstock, you need to programmatically track bridge state. This monitor is a working reference for exactly that.
 
 ---
 
@@ -77,11 +85,13 @@ cp .env.example .env
 ```
 
 **JavaScript:**
+
 ```bash
 npm install
 ```
 
 **Python:**
+
 ```bash
 # Use 'python3 -m pip' — not a bare 'pip3'. On macOS, pip3 can point to a
 # different Python than python3, causing silent "module not found" errors at runtime.
@@ -89,6 +99,7 @@ python3 -m pip install web3 python-dotenv requests
 ```
 
 > **Python version note:** Python 3.10–3.13 is recommended. Python 3.14 has a known `pyexpat`/`libexpat` incompatibility on macOS that breaks `web3` installation. If you hit this, use:
+>
 > ```bash
 > brew install python@3.12
 > python3.12 -m pip install web3 python-dotenv requests
@@ -104,7 +115,7 @@ RSK_RPC_URL=https://rpc.testnet.rootstock.io/YOUR_API_KEY
 BRIDGE_ADDRESS=0x0000000000000000000000000000000001000006
 NETWORK=testnet
 
-# Optional — leave blank to disable alerts
+# Optional - leave blank to disable alerts
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
 DISCORD_WEBHOOK_URL=
@@ -122,7 +133,7 @@ The critical thing to understand before building a monitor: **the Bridge does no
 
 When you call `getBtcBlockchainBestChainHeight()`, you get the Bridge's own verified BTC chain tip. This is the authoritative number for peg-in confirmation counting. You compare the BTC block your peg-in transaction landed in against this Bridge-internal height — not against Blockstream's API.
 
-Why does this matter? Because the Bridge only unlocks rBTC when *it* has seen 100 Bitcoin confirmations (10 on testnet). The confirmation count you display must use the Bridge's view:
+Why does this matter? Because the Bridge only unlocks rBTC when _it_ has seen enough Bitcoin confirmations — 100 on mainnet, 10 on testnet. The confirmation count you display must use the Bridge's view:
 
 ```
 btcConfirmations = bridgeBtcHeight - txBlockHeight + 1
@@ -135,7 +146,7 @@ The `+1` follows the standard confirmations convention — a transaction has 1 c
 The ABI tells ethers.js or web3.py how to encode and decode calls to the Bridge precompile. You only need four read-only functions:
 
 - **`getBtcBlockchainBestChainHeight`** — Bridge's internal SPV view of the Bitcoin chain. Returned as `int32` (signed) to match the Bridge's internal representation; always positive in practice.
-- **`getFederationAddress`** — The current PowPeg multisig address on Bitcoin. The federation address changes when the federation composition changes, so the monitor validates your BTC tx targets the *current* address at startup.
+- **`getFederationAddress`** — The current PowPeg multisig address on Bitcoin. The federation address changes when the federation composition changes, so the monitor validates your BTC tx targets the _current_ address at startup.
 - **`getQueuedPegoutsCount`** — How many peg-out requests are currently waiting in the batch queue.
 - **`getNextPegoutCreationBlockNumber`** — The RSK block number when the next batch will be assembled.
 
@@ -183,7 +194,7 @@ Save this as `bridge-abi.json`:
 1. Call `getFederationAddress()` to get the current federation address — **always fetch this fresh**, never hardcode it.
 2. Send BTC to that address from a legacy (non-SegWit) Bitcoin wallet — minimum 0.005 BTC.
 3. The Bridge watches Bitcoin in SPV mode. Rootstock nodes continuously relay Bitcoin block headers.
-4. After **100 Bitcoin confirmations** (~17 hours on mainnet, ~10 blocks on testnet), the Bridge verifies the payment and mints equivalent rBTC to your Rootstock address.
+4. After the required number of Bitcoin confirmations — **100 on mainnet (~17 hours), 10 on testnet (~100 min)** — the Bridge verifies the payment and mints equivalent rBTC to your Rootstock address.
 
 ### 3.2 Validating the Transaction
 
@@ -197,7 +208,9 @@ async function validatePeginTarget(btcTxHash, expectedFedAddress) {
   const res = await withRetry(async () => {
     const r = await fetch(`${BTC_API}/tx/${btcTxHash}`);
     if (r.status === 404) {
-      throw new FatalError(`Tx ${btcTxHash} not found on ${NETWORK}. Check the hash.`);
+      throw new FatalError(
+        `Tx ${btcTxHash} not found on ${NETWORK}. Check the hash.`,
+      );
     }
     if (!r.ok) throw new Error(`Blockstream HTTP ${r.status}`);
     return r;
@@ -209,11 +222,13 @@ async function validatePeginTarget(btcTxHash, expectedFedAddress) {
   if (!tx?.vout?.length) {
     throw new Error(`Could not fetch outputs for tx ${btcTxHash}.`);
   }
-  const targeted = tx.vout.some((v) => v.scriptpubkey_address === expectedFedAddress);
+  const targeted = tx.vout.some(
+    (v) => v.scriptpubkey_address === expectedFedAddress,
+  );
   if (!targeted) {
     throw new Error(
       `Tx ${btcTxHash} does not send to federation address ${expectedFedAddress}.\n` +
-      `The PowPeg composition may have changed. Check powpeg.rootstock.io.`
+        `The PowPeg composition may have changed. Check powpeg.rootstock.io.`,
     );
   }
 }
@@ -249,31 +264,35 @@ async function monitorPegin(btcTxHash, rskAddress) {
 
       if (!txData?.status?.confirmed) {
         printStatus("PEG-IN (BTC → rBTC)", {
-          "BTC Tx Hash"      : `${btcTxHash.slice(0, 20)}...`,
-          "RSK Address"      : `${rskAddress.slice(0, 20)}...`,
+          "BTC Tx Hash": `${btcTxHash.slice(0, 20)}...`,
+          "RSK Address": `${rskAddress.slice(0, 20)}...`,
           "Bridge BTC Height": String(bridgeBtcHeight),
-          "BTC Status"       : "Unconfirmed (mempool)",
-          "Confirmations"    : `0 / ${PEGIN_REQUIRED}`,
-          "ETA"              : secondsToHuman(PEGIN_REQUIRED * BTC_BLOCK_TIME),
+          "BTC Status": "Unconfirmed (mempool)",
+          Confirmations: `0 / ${PEGIN_REQUIRED}`,
+          ETA: secondsToHuman(PEGIN_REQUIRED * BTC_BLOCK_TIME),
         });
         return;
       }
 
-      const txBlockHeight    = txData.status.block_height;
-      const btcConfirmations = Math.max(0, Number(bridgeBtcHeight) - txBlockHeight + 1);
-      const remaining        = Math.max(0, PEGIN_REQUIRED - btcConfirmations);
-      const complete         = btcConfirmations >= PEGIN_REQUIRED;
+      const txBlockHeight = txData.status.block_height;
+      const btcConfirmations = Math.max(
+        0,
+        Number(bridgeBtcHeight) - txBlockHeight + 1,
+      );
+      const remaining = Math.max(0, PEGIN_REQUIRED - btcConfirmations);
+      const complete = btcConfirmations >= PEGIN_REQUIRED;
 
       printStatus("PEG-IN (BTC → rBTC)", {
-        "BTC Tx Hash"      : `${btcTxHash.slice(0, 20)}...`,
-        "RSK Address"      : `${rskAddress.slice(0, 20)}...`,
-        "BTC Tx Block"     : String(txBlockHeight),
+        "BTC Tx Hash": `${btcTxHash.slice(0, 20)}...`,
+        "RSK Address": `${rskAddress.slice(0, 20)}...`,
+        "BTC Tx Block": String(txBlockHeight),
         "Bridge BTC Height": String(bridgeBtcHeight),
-        "Confirmations"    : `${btcConfirmations} / ${PEGIN_REQUIRED}`,
-        "Status"           : complete
+        Confirmations: `${btcConfirmations} / ${PEGIN_REQUIRED}`,
+        Status: complete
           ? "✓ COMPLETE — rBTC credited"
           : `Waiting (${btcConfirmations}/${PEGIN_REQUIRED} BTC blocks)`,
-        "ETA"              : remaining > 0 ? secondsToHuman(remaining * BTC_BLOCK_TIME) : "Done",
+        ETA:
+          remaining > 0 ? secondsToHuman(remaining * BTC_BLOCK_TIME) : "Done",
       });
 
       // Single merged write — prevents a crash between two separate writes from
@@ -285,7 +304,7 @@ async function monitorPegin(btcTxHash, rskAddress) {
       if (complete && !alertedComplete) {
         alertedComplete = true;
         await sendAlert(
-          `✅ *PowPeg Peg-In Complete*\nBTC Tx: \`${btcTxHash}\`\nrBTC credited to: \`${rskAddress}\`\nNetwork: ${NETWORK}`
+          `✅ *PowPeg Peg-In Complete*\nBTC Tx: \`${btcTxHash}\`\nrBTC credited to: \`${rskAddress}\`\nNetwork: ${NETWORK}`,
         );
       }
     } catch (err) {
@@ -318,9 +337,9 @@ async function monitorPegin(btcTxHash, rskAddress) {
 
 1. Send rBTC directly to the Bridge contract address on Rootstock — minimum 0.004 rBTC, gas limit 100,000.
 2. The Bridge **queues** your request. Peg-outs are batched every ~360 RSK blocks (~3 hours).
-3. After **4,000 RSK block confirmations** (~34 hours on mainnet, 10 on testnet), the PowHSM devices sign the Bitcoin transaction with their hardware-secured keys and broadcast it to the Bitcoin network.
+3. After the required RSK confirmations — **4,000 on mainnet (~34 hours), 10 on testnet (~5 min)** — the PowHSM devices sign the Bitcoin transaction with their hardware-secured keys and broadcast it to the Bitcoin network.
 
-The 4,000 RSK block threshold exists because Rootstock uses merged mining — a reorganization of the RSK chain could theoretically undo a peg-out request. 4,000 blocks (~34 hours) makes such a reorg computationally infeasible.
+The 4,000 RSK block threshold on mainnet exists because a deep Rootstock chain reorganization could theoretically undo a peg-out request. Waiting 4,000 blocks makes such a reorg computationally infeasible in practice.
 
 For peg-out monitoring, everything is on RSK — no Bitcoin API calls needed.
 
@@ -329,8 +348,8 @@ For peg-out monitoring, everything is on RSK — no Bitcoin API calls needed.
 ```javascript
 async function monitorPegout(rskTxHash) {
   const state = loadState();
-  let alertedQueued   = state[`${rskTxHash}_queued`]   || false;
-  let alertedComplete = state[`${rskTxHash}_complete`]  || false;
+  let alertedQueued = state[`${rskTxHash}_queued`] || false;
+  let alertedComplete = state[`${rskTxHash}_complete`] || false;
 
   async function poll() {
     try {
@@ -341,18 +360,18 @@ async function monitorPegout(rskTxHash) {
 
       if (!receipt) {
         printStatus("PEG-OUT (rBTC → BTC)", {
-          "RSK Tx Hash"   : `${rskTxHash.slice(0, 22)}...`,
-          "Current Block" : String(currentBlock),
-          "Status"        : "Pending — not yet mined",
-          "Confirmations" : `0 / ${PEGOUT_REQUIRED}`,
+          "RSK Tx Hash": `${rskTxHash.slice(0, 22)}...`,
+          "Current Block": String(currentBlock),
+          Status: "Pending — not yet mined",
+          Confirmations: `0 / ${PEGOUT_REQUIRED}`,
         });
         return;
       }
 
-      const txBlock      = receipt.blockNumber;
-      const rskConfirms  = currentBlock - txBlock;
-      const remaining    = Math.max(0, PEGOUT_REQUIRED - rskConfirms);
-      const complete     = rskConfirms >= PEGOUT_REQUIRED;
+      const txBlock = receipt.blockNumber;
+      const rskConfirms = currentBlock - txBlock;
+      const remaining = Math.max(0, PEGOUT_REQUIRED - rskConfirms);
+      const complete = rskConfirms >= PEGOUT_REQUIRED;
 
       const [queuedCount, nextBatchBlock] = await Promise.all([
         withRetry(() => bridge.getQueuedPegoutsCount()),
@@ -366,36 +385,38 @@ async function monitorPegout(rskTxHash) {
       const status = complete
         ? "✓ COMPLETE — BTC broadcast"
         : rskConfirms >= 10
-        ? `Processing (${rskConfirms}/${PEGOUT_REQUIRED} RSK blocks)`
-        : "Queued — awaiting minimum confirmations";
+          ? `Processing (${rskConfirms}/${PEGOUT_REQUIRED} RSK blocks)`
+          : "Queued — awaiting minimum confirmations";
 
       printStatus("PEG-OUT (rBTC → BTC)", {
-        "RSK Tx Hash"   : `${rskTxHash.slice(0, 22)}...`,
-        "Tx Block"      : String(txBlock),
-        "Current Block" : String(currentBlock),
-        "Confirmations" : `${rskConfirms} / ${PEGOUT_REQUIRED}`,
-        "Queue Size"    : `${queuedCount} pending pegout(s)`,
-        "Next Batch"    : blocksToNext > 0 ? `${blocksToNext} blocks` : "Imminent",
-        "Status"        : status,
-        "ETA"           : remaining > 0 ? secondsToHuman(remaining * RSK_BLOCK_TIME) : "Done",
+        "RSK Tx Hash": `${rskTxHash.slice(0, 22)}...`,
+        "Tx Block": String(txBlock),
+        "Current Block": String(currentBlock),
+        Confirmations: `${rskConfirms} / ${PEGOUT_REQUIRED}`,
+        "Queue Size": `${queuedCount} pending pegout(s)`,
+        "Next Batch": blocksToNext > 0 ? `${blocksToNext} blocks` : "Imminent",
+        Status: status,
+        ETA:
+          remaining > 0 ? secondsToHuman(remaining * RSK_BLOCK_TIME) : "Done",
       });
 
       const updates = { [`${rskTxHash}_confirms`]: rskConfirms };
-      if (rskConfirms >= 10 && !alertedQueued) updates[`${rskTxHash}_queued`] = true;
-      if (complete && !alertedComplete)         updates[`${rskTxHash}_complete`] = true;
+      if (rskConfirms >= 10 && !alertedQueued)
+        updates[`${rskTxHash}_queued`] = true;
+      if (complete && !alertedComplete) updates[`${rskTxHash}_complete`] = true;
       saveState({ ...loadState(), ...updates });
 
       if (rskConfirms >= 10 && !alertedQueued) {
         alertedQueued = true;
         await sendAlert(
-          `🔄 *PowPeg Peg-Out Queued*\nRSK Tx: \`${rskTxHash}\`\n${rskConfirms} RSK confirmations so far.\nNetwork: ${NETWORK}`
+          `🔄 *PowPeg Peg-Out Queued*\nRSK Tx: \`${rskTxHash}\`\n${rskConfirms} RSK confirmations so far.\nNetwork: ${NETWORK}`,
         );
       }
 
       if (complete && !alertedComplete) {
         alertedComplete = true;
         await sendAlert(
-          `✅ *PowPeg Peg-Out Complete*\nRSK Tx: \`${rskTxHash}\`\n${PEGOUT_REQUIRED} RSK confirmations reached. BTC broadcast.\nNetwork: ${NETWORK}`
+          `✅ *PowPeg Peg-Out Complete*\nRSK Tx: \`${rskTxHash}\`\n${PEGOUT_REQUIRED} RSK confirmations reached. BTC broadcast.\nNetwork: ${NETWORK}`,
         );
       }
     } catch (err) {
@@ -422,7 +443,7 @@ async function monitorPegout(rskTxHash) {
 
 ## Section 5: Alerts — Telegram and Discord
 
-### 5.1 🔹 Telegram Setup
+### 5.1 Telegram Setup
 
 1. Open Telegram and message `@BotFather` — send `/newbot` and follow the prompts to get a **bot token**.
 2. Start a chat with your bot, then visit `https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates` to find your **chat ID**.
@@ -433,7 +454,7 @@ TELEGRAM_BOT_TOKEN=1234567890:ABCdef...
 TELEGRAM_CHAT_ID=987654321
 ```
 
-### 5.2 🔹 Discord Setup
+### 5.2 Discord Setup
 
 1. In your Discord server, go to **Server Settings → Integrations → Webhooks → New Webhook**.
 2. Copy the webhook URL and add it to `.env`:
@@ -818,14 +839,16 @@ if __name__ == "__main__":
 
 Four differences from the JS version worth noting:
 
-- 🔹 **Synchronous I/O** — A blocking `while True` / `time.sleep(60)` loop instead of `setInterval`. Simpler to reason about for a single-transaction monitor.
-- 🔹 **Concurrent alerts** — `requests` is synchronous, so `send_telegram` + `send_discord` run in a `ThreadPoolExecutor(max_workers=2)` — matching the JS `Promise.all` behavior. Without this, both calls block sequentially for up to 20 seconds.
-- 🔹 **FatalError in the poll loop** — Explicitly caught before `except Exception` so it calls `sys.exit(1)` instead of being swallowed and looping forever.
-- 🔹 **Checksum addresses** — `web3.py` requires `Web3.to_checksum_address()` for contract calls. ethers.js handles this transparently.
+- **Synchronous I/O** — A blocking `while True` / `time.sleep(60)` loop instead of `setInterval`. Simpler to reason about for a single-transaction monitor.
+- **Concurrent alerts** — `requests` is synchronous, so `send_telegram` + `send_discord` run in a `ThreadPoolExecutor(max_workers=2)` — matching the JS `Promise.all` behavior. Without this, both calls block sequentially for up to 20 seconds.
+- **FatalError in the poll loop** — Explicitly caught before `except Exception` so it calls `sys.exit(1)` instead of being swallowed and looping forever.
+- **Checksum addresses** — `web3.py` requires `Web3.to_checksum_address()` for contract calls. ethers.js handles this transparently.
 
 ---
 
 ## Section 7: Running the Monitor
+
+### 7.1 CLI Reference
 
 ```bash
 # Peg-in: track a BTC transaction being pegged into Rootstock
@@ -839,7 +862,46 @@ python monitor.py pegin <btcTxHash> <rskAddress>
 python monitor.py pegout <rskTxHash>
 ```
 
-When running, the monitor clears the terminal and renders a live dashboard that refreshes every 60 seconds:
+The dashboard refreshes every 60 seconds (one poll cycle). It is not live-streaming — the update interval reflects BTC block times (~10 min) and the free RPC tier limits.
+
+### 7.2 Testnet Walkthrough
+
+The fastest way to try the monitor end-to-end is with a testnet peg-out, which only requires 10 RSK confirmations (~5 minutes).
+
+**Step 1 — Find a testnet peg-out transaction**
+
+Go to the [Rootstock testnet explorer](https://explorer.testnet.rootstock.io/address/0x0000000000000000000000000000000001000006) and look for a recent incoming transaction to the Bridge contract address. Copy the transaction hash.
+
+Alternatively, use this representative example transaction hash from testnet:
+
+```
+0x6bf61dd27a57e6f70178a6385a4acf14a181e8daa737f4c2e1124e7a2ee75cbf
+```
+
+> **Note:** This is transaction hash from th e testnet explorer, you can replace it with a a different transaction hash from the testnet explorer before running.
+
+**Step 2 — Set up your `.env`**
+
+```env
+RSK_RPC_URL=https://rpc.testnet.rootstock.io/YOUR_API_KEY
+NETWORK=testnet
+```
+
+**Step 3 — Run the monitor**
+
+JavaScript:
+
+```bash
+node monitor.js pegout 0x<your-testnet-tx-hash>
+```
+
+Python:
+
+```bash
+python monitor.py pegout 0x<your-testnet-tx-hash>
+```
+
+**Expected output:**
 
 ```
 ╔════════════════════════════════════════════╗
@@ -849,8 +911,8 @@ When running, the monitor clears the terminal and renders a live dashboard that 
   Type              : PEG-OUT (rBTC → BTC)
   RSK Tx Hash       : 0x3fa2c1b8e9d04a7f...
   Tx Block          : 6142301
-  Current Block     : 6142489
-  Confirmations     : 188 / 10
+  Current Block     : 6142320
+  Confirmations     : 19 / 10
   Queue Size        : 2 pending pegout(s)
   Next Batch        : Imminent
   Status            : ✓ COMPLETE — BTC broadcast
@@ -860,6 +922,8 @@ When running, the monitor clears the terminal and renders a live dashboard that 
   Press Ctrl+C to stop.
 ```
 
+On testnet, a fresh peg-out transaction reaches 10 RSK confirmations in about 5 minutes. For a peg-in walkthrough, find a testnet BTC transaction at [Blockstream testnet explorer](https://blockstream.info/testnet) sent to the testnet federation address (fetched via `getFederationAddress()` on testnet).
+
 Press `Ctrl+C` to stop cleanly. The monitor saves confirmation progress to `monitor-state.json` on every poll cycle so it can resume seamlessly after a restart.
 
 ---
@@ -868,35 +932,35 @@ Press `Ctrl+C` to stop cleanly. The monitor saves confirmation progress to `moni
 
 A few choices in the monitor that go beyond "make it work":
 
-- ✅ **`FatalError` vs retryable errors** — A Blockstream 404 means your BTC tx hash is wrong. Retrying will never fix it. Classifying it as `FatalError` stops the monitor immediately with a clear message instead of silently looping for hours.
+- **`FatalError` vs retryable errors** — A Blockstream 404 means your BTC tx hash is wrong. Retrying will never fix it. Classifying it as `FatalError` stops the monitor immediately with a clear message instead of silently looping for hours.
 
-- ✅ **Atomic state writes** — State is written to a `.tmp` file first, then renamed over the target. A kill signal mid-write leaves the `.tmp` file, not a truncated JSON. Corrupt state on restart means alert deduplication is lost — you'd get duplicate "complete" notifications.
+- **Atomic state writes** — State is written to a `.tmp` file first, then renamed over the target. A kill signal mid-write leaves the `.tmp` file, not a truncated JSON. Corrupt state on restart means alert deduplication is lost — you'd get duplicate "complete" notifications.
 
-- ✅ **Single merged state write per cycle** — Both `_confirms` and `_complete` keys are written in the same `saveState` call. A crash between two separate writes would leave `_complete` unset, causing the completion alert to fire again on the next restart.
+- **Single merged state write per cycle** — Both `_confirms` and `_complete` keys are written in the same `saveState` call. A crash between two separate writes would leave `_complete` unset, causing the completion alert to fire again on the next restart.
 
-- ✅ **NETWORK validation at startup** — `NETWORK=Mainnet` (capital M) would silently use testnet thresholds and the testnet Blockstream API. The monitor validates against `["mainnet", "testnet"]` and exits immediately on a mismatch.
+- **NETWORK validation at startup** — `NETWORK=Mainnet` (capital M) would silently use testnet thresholds and the testnet Blockstream API. The monitor validates against `["mainnet", "testnet"]` and exits immediately on a mismatch.
 
-- ✅ **Input validation before polling** — BTC tx hashes must be exactly 64 hex characters; RSK tx hashes must match `0x[0-9a-fA-F]{64}`. A typo caught at startup saves you from 30 minutes of confusing RPC errors.
+- **Input validation before polling** — BTC tx hashes must be exactly 64 hex characters; RSK tx hashes must match `0x[0-9a-fA-F]{64}`. A typo caught at startup saves you from 30 minutes of confusing RPC errors.
 
-- ✅ **`process.once` for SIGINT** — Using `process.on` would stack handlers if `monitorPegin`/`monitorPegout` were ever called more than once in the same process (e.g. in tests), causing duplicate exits and Node `MaxListenersExceeded` warnings.
+- **`process.once` for SIGINT** — Using `process.on` would stack handlers if `monitorPegin`/`monitorPegout` were ever called more than once in the same process (e.g. in tests), causing duplicate exits and Node `MaxListenersExceeded` warnings.
 
-- ✅ **`require.main === module` guard** — The entry point is wrapped so test suites can import and unit-test individual functions without triggering the CLI. All internals are exported via `module.exports`.
+- **`require.main === module` guard** — The entry point is wrapped so test suites can import and unit-test individual functions without triggering the CLI. All internals are exported via `module.exports`.
 
 ---
 
 ## 🎉 Wrapping Up
 
-Great work! You've now built a production-grade PowPeg monitor — in both JavaScript and Python — that tracks live BTC↔rBTC transfer progress, fires real-time Telegram and Discord alerts, and handles the failure modes that a bridge monitor actually encounters in the wild.
+Great work! You've now built a production-grade PowPeg monitor — in both JavaScript and Python — that tracks BTC↔rBTC transfer progress via near real-time polling, fires Telegram and Discord alerts on completion, and handles the failure modes that a bridge monitor actually encounters in the wild.
 
 I hope this tutorial gives you a solid understanding of how the Rootstock PowPeg works under the hood and how to build reliable tooling on top of it. The full source, test suite, and `.env.example` are all at **[github.com/michojekunle/powpeg-monitor](https://github.com/michojekunle/powpeg-monitor)** — star the repo if this was useful, and feel free to open an issue or PR.
 
-Keep building on Rootstock 🧡
+Keep building on Rootstock.
 
 ---
 
 **Rootstock community resources:**
 
-- 💬 [Rootstock Discord](https://discord.gg/rootstock)
-- 📢 [Rootstock Telegram](https://t.me/rootstock_official)
-- 📚 [Rootstock Docs](https://dev.rootstock.io)
-- 🌉 [PowPeg Portal](https://powpeg.rootstock.io)
+- [Rootstock Discord](https://discord.gg/rootstock)
+- [Rootstock Telegram](https://t.me/rootstock_official)
+- [Rootstock Docs](https://dev.rootstock.io)
+- [PowPeg Portal](https://powpeg.rootstock.io)

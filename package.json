@@ -1,7 +1,7 @@
 {
   "name": "powpeg-monitor",
   "version": "1.0.0",
-  "description": "Real-time PowPeg bridge monitor for Rootstock — tracks peg-in and peg-out confirmations with optional Telegram/Discord alerts",
+  "description": "Near real-time, polling-based PowPeg bridge monitor for Rootstock — tracks peg-in and peg-out confirmations with optional Telegram/Discord alerts",
   "main": "monitor.js",
   "scripts": {
     "pegin": "node monitor.js pegin",

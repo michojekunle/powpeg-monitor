@@ -22,7 +22,7 @@ load_dotenv()
 class FatalError(Exception):
     pass
 
-# ── Config ─────────────────────────────────────────────────────────────────────
+# -- Config --
 
 RSK_RPC_URL    = os.getenv("RSK_RPC_URL")
 BRIDGE_ADDRESS = os.getenv("BRIDGE_ADDRESS", "0x0000000000000000000000000000000001000006")
@@ -64,7 +64,7 @@ bridge = w3.eth.contract(
     abi=BRIDGE_ABI,
 )
 
-# ── State persistence ──────────────────────────────────────────────────────────
+# -- State persistence --
 
 def load_state() -> dict:
     try:
@@ -83,7 +83,7 @@ def save_state(state: dict) -> None:
         json.dump(state, f, indent=2)
     os.replace(tmp, STATE_FILE)
 
-# ── Utilities ──────────────────────────────────────────────────────────────────
+# -- Utilities --
 
 def seconds_to_human(seconds: int) -> str:
     if seconds < 60:
@@ -105,7 +105,7 @@ def print_status(label: str, data: dict) -> None:
     print(f"\n  Updated           : {datetime.now().strftime('%H:%M:%S')}")
     print("  Press Ctrl+C to stop.\n")
 
-# ── Alerts ─────────────────────────────────────────────────────────────────────
+# -- Alerts --
 
 def send_telegram(message: str) -> None:
     token   = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -138,7 +138,7 @@ def send_alert(message: str) -> None:
         executor.submit(send_telegram, message)
         executor.submit(send_discord, message)
 
-# ── Retry wrapper ──────────────────────────────────────────────────────────────
+# -- Retry wrapper --
 
 def with_retry(fn, max_retries: int = 3):
     for i in range(max_retries):
@@ -153,7 +153,7 @@ def with_retry(fn, max_retries: int = 3):
             print(f"  [attempt {i + 1}/{max_retries} failed] {e} — retrying in {delay}s")
             time.sleep(delay)
 
-# ── Peg-In helpers ─────────────────────────────────────────────────────────────
+# -- Peg-In helpers --
 
 def validate_pegin_target(btc_tx_hash: str, expected_fed_address: str) -> None:
     # FatalError on 404 — bad hash, not retried; RuntimeError on 5xx — transient, retried
@@ -178,7 +178,7 @@ def validate_pegin_target(btc_tx_hash: str, expected_fed_address: str) -> None:
             f"The PowPeg composition may have changed. Check powpeg.rootstock.io for the current address."
         )
 
-# ── Peg-In Monitor ─────────────────────────────────────────────────────────────
+# -- Peg-In Monitor --
 
 def monitor_pegin(btc_tx_hash: str, rsk_address: str) -> None:
     # Strip accidental 0x prefix — BTC tx hashes are plain hex
@@ -264,7 +264,7 @@ def monitor_pegin(btc_tx_hash: str, rsk_address: str) -> None:
 
         time.sleep(POLL_INTERVAL)
 
-# ── Peg-Out Monitor ────────────────────────────────────────────────────────────
+# -- Peg-Out Monitor --
 
 def monitor_pegout(rsk_tx_hash: str) -> None:
     state            = load_state()
@@ -357,7 +357,7 @@ def monitor_pegout(rsk_tx_hash: str) -> None:
 
         time.sleep(POLL_INTERVAL)
 
-# ── Entry point ────────────────────────────────────────────────────────────────
+# -- Entry point --
 
 BTC_HASH_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 RSK_HASH_RE = re.compile(r"^0x[0-9a-fA-F]{64}$", re.IGNORECASE)
